@@ -1,0 +1,545 @@
+import {
+  Client as ClientV2,
+  StreamableHTTPClientTransport as TransportV2,
+} from "@modelcontextprotocol/client";
+import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport as TransportV1 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import {
+  ACTIONS,
+  CHALLENGE,
+  type Instance,
+  startInstance,
+  TOKENS,
+} from "./harness.ts";
+
+/**
+ * The connector against real MCP clients, over HTTP.
+ *
+ * Three clients, because an association's members bring what they have: the
+ * current SDK on the 2026-07-28 revision, the same SDK pinned to the 2025
+ * handshake, and the previous SDK, which is what most clients in use today are
+ * built on. Each of them signs in with a token, lists the tools and calls them.
+ */
+
+interface Connected {
+  listTools(): Promise<{
+    tools: {
+      name: string;
+      title?: string;
+      description?: string;
+      inputSchema: Record<string, unknown>;
+      outputSchema?: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+    }[];
+  }>;
+  callTool(params: {
+    name: string;
+    arguments?: Record<string, unknown>;
+  }): Promise<{
+    isError?: boolean;
+    content?: unknown;
+    structuredContent?: unknown;
+  }>;
+  serverName(): string | undefined;
+  protocolVersion(): string | undefined;
+  close(): Promise<void>;
+}
+
+type Connect = (url: URL, token: keyof typeof TOKENS) => Promise<Connected>;
+
+const CLIENTS: [string, string, Connect][] = [
+  [
+    "SDK v2 on 2026-07-28",
+    "2026-07-28",
+    async (url, token) => {
+      // The SDK speaks 2025 unless asked to negotiate.
+      const client = new ClientV2(
+        { name: "conformance", version: "1.0.0" },
+        { versionNegotiation: { mode: "auto" } },
+      );
+      await client.connect(
+        new TransportV2(url, {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        }),
+      );
+      return wrap(
+        client,
+        () => client.getServerVersion()?.name,
+        () => client.getNegotiatedProtocolVersion(),
+      );
+    },
+  ],
+  [
+    "SDK v2 on the 2025 handshake",
+    "2025-11-25",
+    async (url, token) => {
+      const client = new ClientV2({ name: "conformance", version: "1.0.0" });
+      await client.connect(
+        new TransportV2(url, {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        }),
+        { prior: { kind: "legacy" } },
+      );
+      return wrap(
+        client,
+        () => client.getServerVersion()?.name,
+        () => client.getNegotiatedProtocolVersion(),
+      );
+    },
+  ],
+  [
+    "SDK v1",
+    "2025-11-25",
+    async (url, token) => {
+      const client = new ClientV1({ name: "conformance", version: "1.0.0" });
+      const transport = new TransportV1(url, {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      });
+      await client.connect(transport);
+      return wrap(
+        client,
+        () => client.getServerVersion()?.name,
+        () => transport.protocolVersion,
+      );
+    },
+  ],
+];
+
+function wrap(
+  client: {
+    listTools(): Promise<unknown>;
+    callTool(params: {
+      name: string;
+      arguments?: Record<string, unknown>;
+    }): Promise<unknown>;
+    close(): Promise<void>;
+  },
+  serverName: () => string | undefined,
+  protocolVersion: () => string | undefined,
+): Connected {
+  return {
+    listTools: () => client.listTools() as ReturnType<Connected["listTools"]>,
+    callTool: (params) =>
+      client.callTool(params) as ReturnType<Connected["callTool"]>,
+    serverName,
+    protocolVersion,
+    close: () => client.close(),
+  };
+}
+
+function textOf(result: { content?: unknown }): unknown {
+  const [first] = result.content as { type: string; text: string }[];
+  return JSON.parse(first?.text ?? "null");
+}
+
+describe.each(CLIENTS)("%s", (_label, revision, connect) => {
+  let instance: Instance;
+  let client: Connected;
+
+  beforeAll(async () => {
+    instance = await startInstance();
+    client = await connect(instance.url, "write");
+  });
+
+  afterAll(async () => {
+    await client?.close();
+    await instance?.close();
+  });
+
+  it("connects to the connector on the revision it asked for", () => {
+    expect(client.serverName()).toBe("openbrf-mcp-connector");
+    expect(client.protocolVersion()).toBe(revision);
+  });
+
+  it("lists every action the host offers, as a tool", async () => {
+    const { tools } = await client.listTools();
+
+    expect(tools.map((tool) => tool.name).sort()).toEqual(
+      ACTIONS.map((action) => action.name).sort(),
+    );
+    const create = tools.find((tool) => tool.name === "news_create");
+    expect(create).toMatchObject({
+      title: "Title of news_create",
+      description: "What news_create does.",
+      inputSchema: {
+        type: "object",
+        properties: { title: { type: "string", description: "The headline." } },
+        required: ["title", "body"],
+        additionalProperties: false,
+      },
+    });
+    // The dialect is kept, as SEP-1613 asks of a server.
+    expect(create?.inputSchema).toHaveProperty(
+      "$schema",
+      "https://json-schema.org/draft/2020-12/schema",
+    );
+  });
+
+  it("states every hint a client decides with", async () => {
+    const { tools } = await client.listTools();
+    const hints = Object.fromEntries(
+      tools.map((tool) => [tool.name, tool.annotations]),
+    );
+
+    expect(hints.facts_read).toMatchObject({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    // A create overwrites nothing; an update does; a delete asks first.
+    expect(hints.news_create).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
+    expect(hints.page_update).toMatchObject({ destructiveHint: true });
+    expect(hints.news_delete).toMatchObject({ destructiveHint: true });
+  });
+
+  it("calls an action and answers with its output", async () => {
+    const result = await client.callTool({ name: "facts_read" });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({
+      name: "BRF Exempel",
+      apartments: 42,
+    });
+    expect(textOf(result)).toEqual({ name: "BRF Exempel", apartments: 42 });
+  });
+
+  it("dispatches as the connected app the host admitted", async () => {
+    await client.callTool({
+      name: "news_create",
+      arguments: { title: "Stämma", body: "Välkomna." },
+    });
+
+    expect(instance.state.invoked.at(-1)).toEqual({
+      name: "news_create",
+      input: { title: "Stämma", body: "Välkomna." },
+      clientId: TOKENS.write.clientId,
+    });
+  });
+
+  it("answers a refusal on the merits as a tool result a model can act on", async () => {
+    const result = await client.callTool({
+      name: "page_update",
+      arguments: { slug: "styrelsen" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toEqual({
+      message: "That address is taken.",
+      reason: "slug-taken",
+      retry: "after-edit",
+      details: { slugs: ["styrelsen"] },
+    });
+  });
+
+  it("answers a refused input with the paths, as a tool result", async () => {
+    const result = await client.callTool({
+      name: "news_create",
+      arguments: { title: "", body: "x" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatchObject({
+      reason: "invalid-body",
+      retry: "after-edit",
+    });
+  });
+
+  it("answers a tool it does not offer as a protocol error", async () => {
+    await expect(client.callTool({ name: "register_member" })).rejects.toThrow(
+      /Unknown tool/,
+    );
+    expect(instance.state.invoked.map((call) => call.name)).not.toContain(
+      "register_member",
+    );
+  });
+
+  it("answers a fault as an internal error without its message", async () => {
+    const failure = await client.callTool({ name: "faulty_read" }).then(
+      () => expect.unreachable("the call failed"),
+      (cause: unknown) => cause as Error,
+    );
+
+    expect(failure.message).toMatch(/The call failed/);
+    expect(failure.message).not.toMatch(/ECONNREFUSED|secret/);
+  });
+});
+
+describe("a token without the scope a call needs", () => {
+  let instance: Instance;
+
+  beforeAll(async () => {
+    instance = await startInstance();
+  });
+
+  afterAll(async () => {
+    await instance?.close();
+  });
+
+  it("is answered 403 with the host's challenge, so the client can ask for it", async () => {
+    // ADR 0009: the challenge names every scope the instance issues, and the
+    // client asks the member for what it lacks in one round trip.
+    const response = await post(instance.url, "read", {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "news_create", arguments: { title: "x", body: "y" } },
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("www-authenticate")).toBe(CHALLENGE);
+  });
+
+  it("still reads", async () => {
+    const response = await post(instance.url, "read", {
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: { name: "facts_read", arguments: {} },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await jsonRpcResult(response)).toMatchObject({
+      structuredContent: { name: "BRF Exempel" },
+    });
+  });
+
+  it("reaches the v1 client as a refusal it can recognise", async () => {
+    const client = new ClientV1({ name: "conformance", version: "1.0.0" });
+    await client.connect(
+      new TransportV1(instance.url, {
+        requestInit: { headers: { authorization: "Bearer read" } },
+      }),
+    );
+    try {
+      await expect(
+        client.callTool({
+          name: "news_create",
+          arguments: { title: "x", body: "y" },
+        }),
+      ).rejects.toThrow(/403|insufficient_scope/i);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+describe("a dormant connector", () => {
+  let instance: Instance;
+
+  beforeAll(async () => {
+    instance = await startInstance({ entitlement: { status: "absent" } });
+  });
+
+  afterAll(async () => {
+    await instance?.close();
+  });
+
+  it.each(CLIENTS)(
+    "refuses %s at sign-in, saying a licence is required",
+    async (_label, _revision, connect) => {
+      await expect(connect(instance.url, "write")).rejects.toThrow(
+        /not licensed/,
+      );
+    },
+  );
+
+  it.each([
+    [
+      "initialize",
+      {
+        protocolVersion: "2025-11-25",
+        capabilities: {},
+        clientInfo: { name: "c", version: "1" },
+      },
+    ],
+    ["tools/list", {}],
+    ["tools/call", { name: "facts_read", arguments: {} }],
+  ])(
+    "answers %s with entitlement-required and no dates",
+    async (method, params) => {
+      const response = await post(instance.url, "write", {
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params,
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        jsonrpc: "2.0",
+        id: 1,
+        error: { code: -32050, data: { reason: "entitlement-required" } },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/\d{4}-\d{2}-\d{2}|lic-/);
+    },
+  );
+
+  it("calls nothing", () => {
+    expect(instance.state.invoked).toEqual([]);
+  });
+
+  it("acknowledges a notification and nothing more", async () => {
+    const response = await post(instance.url, "write", {
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    });
+
+    expect(response.status).toBe(202);
+    expect(await response.text()).toBe("");
+  });
+
+  it.each<[string, Partial<Instance["state"]>]>([
+    [
+      "has expired",
+      {
+        entitlement: {
+          status: "expired",
+          licenceId: "lic-1",
+          validUntil: "2026-01-01",
+        },
+      },
+    ],
+    [
+      "was issued to another instance",
+      { entitlement: { status: "wrong-instance", licenceId: "lic-1" } },
+    ],
+    ["was tampered with", { entitlement: { status: "tampered" } }],
+    [
+      "does not cover this release",
+      {
+        entitlement: {
+          status: "version-not-covered",
+          licenceId: "lic-1",
+          updatesUntil: "2026-01-01",
+          released: "2026-10-20",
+        },
+      },
+    ],
+    [
+      "is not yet valid",
+      {
+        entitlement: {
+          status: "not-yet-valid",
+          licenceId: "lic-1",
+          issuedOn: "2027-01-01",
+        },
+      },
+    ],
+    [
+      "cannot be read, on a host without entitlements",
+      { entitlement: undefined },
+    ],
+  ])("stays dormant when the licence %s", async (_case, state) => {
+    const other = await startInstance(state);
+    try {
+      const response = await post(other.url, "write", {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+      });
+      const body = await response.json();
+      expect(body).toMatchObject({
+        error: { data: { reason: "entitlement-required" } },
+      });
+      expect(JSON.stringify(body)).not.toMatch(/\d{4}-\d{2}-\d{2}|lic-/);
+    } finally {
+      await other.close();
+    }
+  });
+});
+
+describe("the route", () => {
+  let instance: Instance;
+
+  beforeAll(async () => {
+    instance = await startInstance();
+  });
+
+  afterAll(async () => {
+    await instance?.close();
+  });
+
+  it("refuses a request the host admitted on the browser's session", async () => {
+    // Only possible when another plugin holds the instance's protected
+    // resource: the connector's route is then an ordinary plugin route.
+    const response = await fetch(instance.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "x-test-session": "1",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(instance.state.invoked).toEqual([]);
+  });
+
+  it("answers a 2025 session stream request with 405, serving statelessly", async () => {
+    const response = await fetch(instance.url, {
+      method: "GET",
+      headers: {
+        accept: "text/event-stream",
+        authorization: "Bearer write",
+      },
+    });
+
+    expect(response.status).toBe(405);
+  });
+
+  it("says the host is too old when it cannot describe its actions", async () => {
+    const old = await startInstance({ describes: false });
+    try {
+      const response = await post(old.url, "write", {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/list",
+      });
+      expect(await response.json()).toMatchObject({
+        error: { data: { reason: "host-unsupported" } },
+      });
+    } finally {
+      await old.close();
+    }
+  });
+});
+
+async function post(
+  url: URL,
+  token: keyof typeof TOKENS,
+  body: unknown,
+): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${token}`,
+      "mcp-protocol-version": "2025-11-25",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+/** The result of a JSON-RPC response, whether sent as JSON or as one SSE event. */
+async function jsonRpcResult(response: Response): Promise<unknown> {
+  const text = await response.text();
+  const json = response.headers
+    .get("content-type")
+    ?.includes("text/event-stream")
+    ? text
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice("data: ".length))
+        .join("")
+    : text;
+  return (JSON.parse(json) as { result: unknown }).result;
+}
