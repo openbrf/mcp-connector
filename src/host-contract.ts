@@ -88,8 +88,20 @@ export function isActionRefusal(value: unknown): value is ActionRefusal {
   );
 }
 
+/** `ActionClient`: the connected app a request was authenticated with. */
+export interface ActionClient {
+  readonly clientId: string;
+  readonly clientHost: string | null;
+}
+
+/** `PluginActions`, with `client` where the host has it. */
+export type ConnectorActions = PluginHost["actions"] & {
+  readonly client?: (request: ActionRequest) => ActionClient | null;
+};
+
 /** The host object, with the members above where the host has them. */
-export type ConnectorHost = PluginHost & {
+export type ConnectorHost = Omit<PluginHost, "actions"> & {
+  readonly actions: ConnectorActions;
   readonly entitlements?: PluginEntitlements;
 };
 

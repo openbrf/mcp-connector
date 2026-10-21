@@ -5,6 +5,8 @@ import { join, relative, sep } from "node:path";
 
 import { pluginPackageProblems } from "@openbrf/plugin-sdk";
 
+import { languageOf, translate } from "../src/messages.ts";
+
 /**
  * Packs the plugin and runs the SDK's package check over the tarball.
  *
@@ -62,7 +64,16 @@ try {
     process.exitCode = 1;
   } else {
     console.log(
-      `${tarball}: the package check passes (${files.length} files).`,
+      translate(
+        languageOf(
+          process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG,
+        ),
+        "cli.packageCheckPasses",
+        {
+          tarball,
+          count: files.length,
+        },
+      ),
     );
   }
 } finally {

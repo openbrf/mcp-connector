@@ -1,1 +1,16 @@
-{}
+{
+  "errors": {
+    "entitlementRequired": "The MCP Connector is not licensed on this instance. The board enters a licence on the instance's licence screen.",
+    "hostUnsupported": "This instance is older than the MCP Connector. Update the instance to use it.",
+    "unknownTool": "Unknown tool.",
+    "callFailed": "The call failed.",
+    "requestFailed": "The request failed.",
+    "notJsonRpc": "The body is not a JSON-RPC message.",
+    "connectedAppsOnly": "This route serves connected apps only.",
+    "insufficientScope": "The connected app's access does not cover this."
+  },
+  "cli": {
+    "packageCheckPasses_one": "{{tarball}}: the package check passes ({{count}} file).",
+    "packageCheckPasses_other": "{{tarball}}: the package check passes ({{count}} files)."
+  }
+}

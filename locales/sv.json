@@ -1,1 +1,16 @@
-{}
+{
+  "errors": {
+    "entitlementRequired": "MCP Connector är inte licensierad på den här instansen. Styrelsen lägger in en licens på instansens licenssida.",
+    "hostUnsupported": "Den här instansen är äldre än MCP Connector. Uppdatera instansen för att använda den.",
+    "unknownTool": "Okänt verktyg.",
+    "callFailed": "Anropet misslyckades.",
+    "requestFailed": "Begäran misslyckades.",
+    "notJsonRpc": "Innehållet är inte ett JSON-RPC-meddelande.",
+    "connectedAppsOnly": "Den här adressen tar bara emot anslutna appar.",
+    "insufficientScope": "Den anslutna appens behörighet räcker inte till det här."
+  },
+  "cli": {
+    "packageCheckPasses_one": "{{tarball}}: paketkontrollen godkänner paketet ({{count}} fil).",
+    "packageCheckPasses_other": "{{tarball}}: paketkontrollen godkänner paketet ({{count}} filer)."
+  }
+}

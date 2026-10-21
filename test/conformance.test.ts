@@ -251,8 +251,9 @@ describe.each(CLIENTS)("%s", (_label, revision, connect) => {
   });
 
   it("answers a tool it does not offer as a protocol error", async () => {
+    // In Swedish, the product's default: the client asks for no language.
     await expect(client.callTool({ name: "register_member" })).rejects.toThrow(
-      /Unknown tool/,
+      /Okänt verktyg/,
     );
     expect(instance.state.invoked.map((call) => call.name)).not.toContain(
       "register_member",
@@ -265,7 +266,7 @@ describe.each(CLIENTS)("%s", (_label, revision, connect) => {
       (cause: unknown) => cause as Error,
     );
 
-    expect(failure.message).toMatch(/The call failed/);
+    expect(failure.message).toMatch(/Anropet misslyckades/);
     expect(failure.message).not.toMatch(/ECONNREFUSED|secret/);
   });
 });
@@ -344,7 +345,7 @@ describe("a dormant connector", () => {
     "refuses %s at sign-in, saying a licence is required",
     async (_label, _revision, connect) => {
       await expect(connect(instance.url, "write")).rejects.toThrow(
-        /not licensed/,
+        /inte licensierad/,
       );
     },
   );
@@ -480,8 +481,87 @@ describe("the route", () => {
     });
 
     expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: "invalid_request",
+      error_description: "Den här adressen tar bara emot anslutna appar.",
+    });
     expect(instance.state.invoked).toEqual([]);
   });
+
+  it("serves nothing on a host that cannot say whether a connected app sent the request", async () => {
+    const old = await startInstance({ client: false });
+    try {
+      const response = await post(old.url, "write", {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: { name: "facts_read", arguments: {} },
+      });
+      expect(await response.json()).toMatchObject({
+        id: 5,
+        error: { code: -32050, data: { reason: "host-unsupported" } },
+      });
+      expect(old.state.invoked).toEqual([]);
+    } finally {
+      await old.close();
+    }
+  });
+
+  it.each([
+    ["tools/list", {}],
+    ["tools/call", { name: "facts_read", arguments: {} }],
+  ])(
+    "answers %s as an internal error without the message of a listing that failed",
+    async (method, params) => {
+      const failing = await startInstance({
+        listFailure: new Error("database lookup failed: PRIVATE-MARKER-6446"),
+      });
+      try {
+        const response = await post(
+          failing.url,
+          "write",
+          { jsonrpc: "2.0", id: 6, method, params },
+          { "accept-language": "en-GB,en;q=0.9" },
+        );
+        const message = await jsonRpcMessage(response);
+        expect(message).toMatchObject({
+          id: 6,
+          error: { code: -32603, message: "The request failed." },
+        });
+        expect(JSON.stringify(message)).not.toMatch(/PRIVATE-MARKER|database/);
+        expect(failing.state.invoked).toEqual([]);
+      } finally {
+        await failing.close();
+      }
+    },
+  );
+
+  it.each([
+    ["en-US,en;q=0.9", "This route serves connected apps only."],
+    [
+      "sv-SE,sv;q=0.9,en;q=0.8",
+      "Den här adressen tar bara emot anslutna appar.",
+    ],
+    ["de-DE", "Den här adressen tar bara emot anslutna appar."],
+  ])(
+    "answers in the language the request asks for (%s)",
+    async (acceptLanguage, sentence) => {
+      const response = await fetch(instance.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "accept-language": acceptLanguage,
+          "x-test-session": "1",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+
+      expect(await response.json()).toMatchObject({
+        error_description: sentence,
+      });
+    },
+  );
 
   it("answers a 2025 session stream request with 405, serving statelessly", async () => {
     const response = await fetch(instance.url, {
@@ -537,6 +617,7 @@ async function post(
   url: URL,
   token: keyof typeof TOKENS,
   body: unknown,
+  headers: Record<string, string> = {},
 ): Promise<Response> {
   return fetch(url, {
     method: "POST",
@@ -545,6 +626,7 @@ async function post(
       accept: "application/json, text/event-stream",
       authorization: `Bearer ${token}`,
       "mcp-protocol-version": "2025-11-25",
+      ...headers,
     },
     body: JSON.stringify(body),
   });
