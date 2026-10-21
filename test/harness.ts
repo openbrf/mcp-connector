@@ -10,7 +10,7 @@ import {
 import type { PluginModuleFactory } from "@openbrf/plugin-sdk";
 
 import type {
-  ActionDescription,
+  ActionWithSchemas,
   ActionRefusal,
   ConnectorHost,
   EntitlementState,
@@ -53,8 +53,8 @@ interface MarkedRequest {
 
 function description(
   name: string,
-  overrides: Partial<ActionDescription>,
-): ActionDescription {
+  overrides: Partial<ActionWithSchemas>,
+): ActionWithSchemas {
   return {
     name,
     title: `Title of ${name}`,
@@ -91,7 +91,7 @@ function description(
 }
 
 /** The actions the stand-in registry offers a connected app. */
-export const ACTIONS: readonly ActionDescription[] = [
+export const ACTIONS: readonly ActionWithSchemas[] = [
   description("facts_read", {
     effect: "read",
     idempotent: true,
@@ -236,8 +236,8 @@ export interface HostState {
   admitAll?: boolean;
   /** What `host.entitlements.get()` answers; undefined removes the member. */
   entitlement: EntitlementState | undefined;
-  /** Whether the host has `actions.describe`. */
-  describes: boolean;
+  /** Whether `actions.list` carries each action's schemas. */
+  schemas: boolean | "partial";
   /** Every call the connector dispatched. */
   invoked: { name: string; input: unknown; clientId: string | undefined }[];
 }
@@ -247,7 +247,10 @@ export function standInHost(state: HostState): ConnectorHost {
     register: () => undefined,
     list: async () =>
       ACTIONS.map(
-        ({ inputSchema: _in, outputSchema: _out, ...summary }) => summary,
+        ({ inputSchema: _in, outputSchema: _out, ...summary }, index) =>
+          state.schemas === true || (state.schemas === "partial" && index === 0)
+            ? { ...summary, inputSchema: _in, outputSchema: _out }
+            : summary,
       ),
     invoke: async (request: object, name: string, input: unknown) => {
       const marked = request as MarkedRequest;
@@ -258,11 +261,7 @@ export function standInHost(state: HostState): ConnectorHost {
   return {
     id: "mcp-connector",
     permissions: [],
-    get actions() {
-      return state.describes
-        ? { ...actions, describe: async () => [...ACTIONS] }
-        : actions;
-    },
+    actions,
     get entitlements() {
       const entitlement = state.entitlement;
       return entitlement === undefined
@@ -291,7 +290,7 @@ export async function startInstance(
 ): Promise<Instance> {
   const state: HostState = {
     entitlement: ACTIVE,
-    describes: true,
+    schemas: true,
     invoked: [],
     ...initial,
   };

@@ -1,6 +1,6 @@
 import type { Tool, ToolAnnotations } from "@modelcontextprotocol/server";
 
-import type { ActionDescription } from "./host-contract.ts";
+import type { ActionWithSchemas } from "./host-contract.ts";
 
 /**
  * One action as an MCP tool.
@@ -10,7 +10,7 @@ import type { ActionDescription } from "./host-contract.ts";
  * registry resolved into the instance's language, which is what a model and
  * the person approving its call both read.
  */
-export function toolFor(action: ActionDescription): Tool {
+export function toolFor(action: ActionWithSchemas): Tool {
   return {
     name: action.name,
     title: action.title,
@@ -31,7 +31,7 @@ export function toolFor(action: ActionDescription): Tool {
  * itself would read as destroying something and reaching outside the
  * instance: every hint is therefore stated, never left out.
  */
-export function annotationsFor(action: ActionDescription): ToolAnnotations {
+export function annotationsFor(action: ActionWithSchemas): ToolAnnotations {
   return {
     title: action.title,
     readOnlyHint: action.effect === "read",

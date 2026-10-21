@@ -8,10 +8,10 @@ import {
 import type { ActionRequest } from "@openbrf/plugin-sdk";
 
 import {
+  type ActionWithSchemas,
   type ConnectorHost,
-  type DescribeActions,
-  describeOf,
   isActionRefusal,
+  listWithSchemas,
 } from "./host-contract.ts";
 import { toolFor } from "./tools.ts";
 
@@ -82,24 +82,28 @@ export async function serveMcp(
     }
   }
 
-  const describe = describeOf(host);
-  if (describe === null) {
-    return notServed(parsedBody, "host-unsupported");
-  }
-
   const refused: { challenge?: string } = {};
   const handler = createMcpHandler(
-    () => buildServer(host, describe, hostRequest, refused),
-    // Answered as JSON: the stream the SDK upgrades to is for a message sent
-    // before the result, and this server sends none.
+    () => buildServer(host, hostRequest, refused),
     { legacy: "stateless" },
   );
   try {
     const response = await handler.fetch(request, { parsedBody });
+    /*
+     * The SDK may answer with a stream and run the request while it is read,
+     * so whether a call was refused for a scope is known only once the body
+     * has been read to its end. The reply is one message and nothing is sent
+     * before it, so holding it back costs nothing a client could see.
+     */
+    const body = await response.arrayBuffer();
     if (refused.challenge !== undefined) {
       return insufficientScope(refused.challenge);
     }
-    return response;
+    return new Response(body.byteLength === 0 ? null : body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
   } finally {
     await handler.close();
   }
@@ -140,9 +144,29 @@ async function notServedReason(
   return state?.status === "active" ? null : "entitlement-required";
 }
 
+/**
+ * The host's listing with its schemas, or the answer for a host without them.
+ *
+ * Thrown from inside a handler, so `initialize` and `ping` still work on such
+ * a host and only the requests that need a tool say what is wrong.
+ */
+async function listed(
+  host: ConnectorHost,
+  hostRequest: ActionRequest,
+): Promise<ActionWithSchemas[]> {
+  const actions = await listWithSchemas(host, hostRequest);
+  if (actions === null) {
+    throw new ProtocolError(
+      NOT_SERVED_CODE,
+      NOT_SERVED_MESSAGES["host-unsupported"],
+      { reason: "host-unsupported" satisfies NotServedReason },
+    );
+  }
+  return actions;
+}
+
 function buildServer(
   host: ConnectorHost,
-  describe: DescribeActions,
   hostRequest: ActionRequest,
   refused: { challenge?: string },
 ): Server {
@@ -151,7 +175,7 @@ function buildServer(
   });
 
   server.setRequestHandler("tools/list", async () => ({
-    tools: (await describe(hostRequest)).map(toolFor),
+    tools: (await listed(host, hostRequest)).map(toolFor),
   }));
 
   server.setRequestHandler("tools/call", async (request) => {
@@ -163,7 +187,7 @@ function buildServer(
      * name - a call cannot be used to ask what the instance has. The listing
      * is also what holds the output schema the result is shaped against.
      */
-    const offered = (await describe(hostRequest)).find(
+    const offered = (await listed(host, hostRequest)).find(
       (action) => action.name === name,
     );
     if (offered === undefined) {

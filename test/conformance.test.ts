@@ -495,17 +495,38 @@ describe("the route", () => {
     expect(response.status).toBe(405);
   });
 
-  it("says the host is too old when it cannot describe its actions", async () => {
-    const old = await startInstance({ describes: false });
+  it.each([false, "partial"] as const)(
+    "says the host is too old when its listing lacks schemas (%s)",
+    async (schemas) => {
+      const old = await startInstance({ schemas });
+      try {
+        const response = await post(old.url, "write", {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/list",
+        });
+        expect(await jsonRpcMessage(response)).toMatchObject({
+          error: { data: { reason: "host-unsupported" } },
+        });
+      } finally {
+        await old.close();
+      }
+    },
+  );
+
+  it("refuses to call a tool on a host whose listing lacks schemas", async () => {
+    const old = await startInstance({ schemas: false });
     try {
       const response = await post(old.url, "write", {
         jsonrpc: "2.0",
-        id: 3,
-        method: "tools/list",
+        id: 4,
+        method: "tools/call",
+        params: { name: ACTIONS[0]!.name, arguments: {} },
       });
-      expect(await response.json()).toMatchObject({
+      expect(await jsonRpcMessage(response)).toMatchObject({
         error: { data: { reason: "host-unsupported" } },
       });
+      expect(old.state.invoked).toEqual([]);
     } finally {
       await old.close();
     }
@@ -531,6 +552,11 @@ async function post(
 
 /** The result of a JSON-RPC response, whether sent as JSON or as one SSE event. */
 async function jsonRpcResult(response: Response): Promise<unknown> {
+  return ((await jsonRpcMessage(response)) as { result: unknown }).result;
+}
+
+/** The one JSON-RPC message a response carries, as JSON or as an event. */
+async function jsonRpcMessage(response: Response): Promise<unknown> {
   const text = await response.text();
   const json = response.headers
     .get("content-type")
@@ -541,5 +567,5 @@ async function jsonRpcResult(response: Response): Promise<unknown> {
         .map((line) => line.slice("data: ".length))
         .join("")
     : text;
-  return (JSON.parse(json) as { result: unknown }).result;
+  return JSON.parse(json);
 }

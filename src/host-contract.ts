@@ -1,7 +1,6 @@
 import type {
   ActionRequest,
   ActionSummary,
-  PluginActionFilter,
   PluginHost,
 } from "@openbrf/plugin-sdk";
 
@@ -15,17 +14,11 @@ import type {
  * Replace each with the SDK's own export once a release carries it.
  */
 
-/** `ActionDescription`: what `host.actions.describe` answers for one action. */
-export interface ActionDescription extends ActionSummary {
+/** `ActionWithSchemas`: what `host.actions.list` answers for one action. */
+export interface ActionWithSchemas extends ActionSummary {
   readonly inputSchema: Record<string, unknown>;
   readonly outputSchema: Record<string, unknown>;
 }
-
-/** `PluginActions.describe`: the listing with each action's schemas. */
-export type DescribeActions = (
-  request: ActionRequest,
-  filter?: PluginActionFilter,
-) => Promise<ActionDescription[]>;
 
 /** `EntitlementState`: the host's finding on this plugin's licence (ADR 0042). */
 export type EntitlementState =
@@ -100,11 +93,29 @@ export type ConnectorHost = PluginHost & {
   readonly entitlements?: PluginEntitlements;
 };
 
-/** `host.actions.describe`, or null on a host that predates it. */
-export function describeOf(host: ConnectorHost): DescribeActions | null {
-  const actions = host.actions as
-    (PluginHost["actions"] & { describe?: unknown }) | undefined;
-  return typeof actions?.describe === "function"
-    ? (actions.describe as DescribeActions).bind(actions)
-    : null;
+/**
+ * The actions the registry offers this request, each with its schemas, or
+ * null on a host that lists none.
+ *
+ * `list` is older than the schemas on its entries, so a host from before them
+ * answers entries without `inputSchema` and `outputSchema`. That cannot be
+ * seen on an empty listing, which has nothing to build a tool from either
+ * way. Entries are checked one by one rather than the first alone, so a
+ * listing the host half-fills is refused too.
+ */
+export async function listWithSchemas(
+  host: ConnectorHost,
+  request: ActionRequest,
+): Promise<ActionWithSchemas[] | null> {
+  const listed: ActionSummary[] = await host.actions.list(request);
+  return listed.every(hasSchemas) ? listed : null;
+}
+
+function hasSchemas(action: ActionSummary): action is ActionWithSchemas {
+  const { inputSchema, outputSchema } = action as Partial<ActionWithSchemas>;
+  return isObject(inputSchema) && isObject(outputSchema);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

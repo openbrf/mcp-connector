@@ -21,7 +21,7 @@ the call.
   connector also refuses a request the host admitted on the browser's session,
   which can happen only when another plugin holds the instance's protected
   resource.
-- **Tools.** `tools/list` is `host.actions.describe(request)`: the actions the
+- **Tools.** `tools/list` is `host.actions.list(request)`: the actions the
   registry offers this member through this app, each with its JSON Schema
   (draft 2020-12, as the host publishes it). The four MCP hints follow the
   mapping in `docs/actions.md` in openbrf/openbrf. Nothing is cached, so
@@ -56,8 +56,10 @@ serves again as it did before.
 
 A host that does not yet have `host.entitlements` cannot tell a licensed instance
 from an unlicensed one, so the connector stays dormant there too. A host whose
-`host.actions` has no `describe` is answered with `data.reason`
-`host-unsupported`.
+`host.actions.list` entries carry no `inputSchema` and `outputSchema` is
+answered with `data.reason` `host-unsupported` to `tools/list` and `tools/call`;
+`initialize` and `ping` still work. An empty listing cannot be told apart from
+one such a host gives, and offers no tools either way.
 
 The issuer key in `package.json` is a placeholder whose private half was never
 kept. No licence verifies against it until Apteo's issuing key replaces it.
@@ -91,7 +93,7 @@ specification, so upgrade it deliberately and run the conformance tests.
 
 ### Host members newer than the SDK release
 
-The connector builds against `@openbrf/plugin-sdk` 1.0.0. `host.actions.describe`,
+The connector builds against `@openbrf/plugin-sdk` 1.0.0. The schemas on a `host.actions.list` entry,
 `host.entitlements` and the shape of an `ActionRefusal` came later.
 `src/host-contract.ts` declares them as the SDK does, and the connector checks for
 each one at run time, because an older host does not have it. Replace those
