@@ -341,7 +341,13 @@ describe("the actions", () => {
 
 describe("the translations", () => {
   it("hold the same keys in both languages", () => {
-    expect(Object.keys(en).toSorted()).toEqual(Object.keys(sv).toSorted());
+    const paths = (tree: object, prefix = ""): string[] =>
+      Object.entries(tree).flatMap(([name, value]) =>
+        typeof value === "string"
+          ? [`${prefix}${name}`]
+          : paths(value as object, `${prefix}${name}.`),
+      );
+    expect(paths(en).toSorted()).toEqual(paths(sv).toSorted());
   });
 
   it("speak English when the person does", async () => {
