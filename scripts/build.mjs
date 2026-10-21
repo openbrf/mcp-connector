@@ -6,6 +6,8 @@ import { build } from "esbuild";
 /**
  * Builds the server entry point: one CommonJS bundle, `dist/server.cjs`.
  *
+ * Run after `vite build`, which builds the view and empties `dist` first.
+ *
  * An installed plugin sits on the instance's data volume, where nothing but
  * Node's built-ins and the packages the host shares can be resolved. So the
  * MCP SDK and everything it needs is bundled in, and the host's packages are
@@ -33,7 +35,10 @@ await build({
   ],
   // The SDK's Node build, which reads JSON Schema with its bundled Ajv.
   conditions: ["node", "require"],
-  define: { CONNECTOR_VERSION: JSON.stringify(packageJson.version) },
+  define: {
+    CONNECTOR_VERSION: JSON.stringify(packageJson.version),
+    LICENCE_ISSUER: JSON.stringify(packageJson.openbrf.licence.issuer),
+  },
   legalComments: "eof",
   logLevel: "info",
 });

@@ -302,10 +302,18 @@ export async function startInstance(
 
   const adapter = new FastifyAdapter();
   adapter.getInstance().addHook("onRequest", async (request, reply) => {
+    const marked = request as unknown as MarkedRequest;
     if (!request.url.startsWith(RESOURCE_PATH)) {
+      // The connector's other routes are the browser's. A token is marked
+      // anyway, standing in for a host that admitted one there.
+      const token = Object.entries(TOKENS).find(
+        ([name]) => request.headers.authorization === `Bearer ${name}`,
+      )?.[1];
+      if (token !== undefined) {
+        marked.token = { clientId: token.clientId, scopes: token.scopes };
+      }
       return;
     }
-    const marked = request as unknown as MarkedRequest;
     if (request.headers[SESSION_HEADER] === "1") {
       marked.principal = { personId: "person-1" };
       return;
