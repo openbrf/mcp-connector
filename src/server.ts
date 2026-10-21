@@ -2,31 +2,53 @@ import {
   Controller,
   Delete,
   type DynamicModule,
+  ForbiddenException,
   Get,
   Module,
   Post,
   Req,
   Res,
+  SetMetadata,
 } from "@nestjs/common";
 import type { PluginHost, PluginModuleFactory } from "@openbrf/plugin-sdk";
 
-import { serveMcp } from "./connector.ts";
+import { connectedApp, serveMcp } from "./connector.ts";
 import type { ConnectorHost } from "./host-contract.ts";
+import {
+  type ConnectorStatus,
+  connectorStatus,
+  type LicenceIssuer,
+  STATUS_PATH,
+  stockholmToday,
+} from "./status.ts";
 
 /**
  * The connector's server entry point.
  *
- * One route, `mcp`, which the manifest declares as the instance's OAuth
- * protected resource. The host mounts it at `/api/plugin/mcp-connector/mcp`,
+ * Two routes. `mcp`, which the manifest declares as the instance's OAuth
+ * protected resource: the host mounts it at `/api/plugin/mcp-connector/mcp`,
  * makes it accept a Bearer token issued for that address and nothing else,
  * and marks each request it admits with the member and the connected app. The
  * route hands the request to the MCP server as a web-standard request and
- * sends back what it answers.
+ * sends back what it answers. And `status`, which the connector's screen reads
+ * on the board's session.
  *
- * The controller takes no constructor arguments: it closes over the host
+ * The controllers take no constructor arguments: they close over the host
  * object instead. The bundler that builds this file does not emit the
  * metadata NestJS would need to inject one.
  */
+
+/** The manifest's `licence.issuer`, written in by the build. */
+declare const LICENCE_ISSUER: LicenceIssuer;
+
+/**
+ * The metadata key the host reads a route's required capabilities from.
+ *
+ * The host's `@RequireCapability` writes it, and the plugin contract lets a
+ * plugin's controller require more than its floor that way. The SDK exports
+ * no decorator for it, so the key is written here as the host spells it.
+ */
+const REQUIRED_CAPABILITIES = "openbrf:required-capabilities";
 
 /** The parts of the host's request and reply this route reads and writes. */
 interface HostRequest {
@@ -134,11 +156,46 @@ export const createPlugin: PluginModuleFactory = (
     }
   }
 
+  /**
+   * The licence finding, for the connector's screen.
+   *
+   * `association:read`, as the instance's plugin list is: the board answers
+   * for how the instance is configured, and reads it without being able to
+   * change it. The connector declares no permission, so without this its
+   * routes are held to `self:manage`, which every resident has.
+   *
+   * A connected app is refused even with a capability that would admit it.
+   * The licence's state and dates are the board's to read, and the MCP route
+   * tells a client no more than that a licence is required. A host without
+   * `actions.client` cannot say who sent the request, and is answered: the
+   * route is behind its session guard all the same, and the screen is what
+   * tells the board that such an instance needs updating.
+   */
+  @Controller(STATUS_PATH)
+  @SetMetadata(REQUIRED_CAPABILITIES, ["association:read"])
+  class StatusController {
+    @Get()
+    async get(@Req() request: HostRequest): Promise<ConnectorStatus> {
+      const app = connectedApp(host, request);
+      if (app !== null && app !== "unknown") {
+        throw new ForbiddenException();
+      }
+      return connectorStatus({
+        hostSupported:
+          host.entitlements !== undefined &&
+          typeof host.actions.client === "function",
+        licence: (await host.entitlements?.get()) ?? null,
+        today: stockholmToday(new Date()),
+        issuer: LICENCE_ISSUER,
+      });
+    }
+  }
+
   @Module({})
   class McpConnectorModule {}
 
   return {
     module: McpConnectorModule,
-    controllers: [McpController],
+    controllers: [McpController, StatusController],
   };
 };

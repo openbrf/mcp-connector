@@ -12,5 +12,49 @@
   "cli": {
     "packageCheckPasses_one": "{{tarball}}: the package check passes ({{count}} file).",
     "packageCheckPasses_other": "{{tarball}}: the package check passes ({{count}} files)."
+  },
+  "view": {
+    "title": "MCP Connector",
+    "intro": "An MCP client, such as a chat assistant, acts as the member who connects it, through the actions this instance offers connected apps.",
+    "loading": "Loading ...",
+    "licence": {
+      "heading": "Licence",
+      "error": "The licence could not be read.",
+      "hostUnsupported": "This instance is older than the connector, which serves no connected app on it. Update the instance to use the connector.",
+      "status": {
+        "active": "The licence is active.",
+        "absent": "No licence for the connector has been entered.",
+        "expired": "The licence has ended.",
+        "version-not-covered": "This release of the connector came out after the last date the licence covers releases to. An earlier release stays covered.",
+        "wrong-instance": "The licence was issued to another instance.",
+        "tampered": "The licence no longer verifies. Enter it again, or ask the issuer for a new one.",
+        "not-yet-valid": "The licence is dated after today, so the clock is wrong on this instance or at the issuer."
+      },
+      "validUntil": "Valid until",
+      "noEnd": "No end date",
+      "updatesUntil": "Covers releases until",
+      "everyRelease": "Every release",
+      "released": "This release",
+      "issuedOn": "Issued on",
+      "id": "Licence id",
+      "endsToday": "The licence ends today. Renew it to keep connected apps served.",
+      "endsIn_one": "The licence ends in {{count}} day. Renew it to keep connected apps served.",
+      "endsIn_other": "The licence ends in {{count}} days. Renew it to keep connected apps served.",
+      "dormant": "Without an active licence the connector is dormant: a connected app is told that a licence is required, and is offered no tools. Nothing is switched off, and the connector serves again as before once a licence is active.",
+      "enter": "The board enters a licence file on the instance's licence screen.",
+      "issuer": "Get a licence from {{name}}"
+    },
+    "address": {
+      "heading": "Address for MCP clients",
+      "hint": "Give this address to the MCP client. The member signs in to this instance when the client connects, and the client then acts as them.",
+      "error": "The address could not be read.",
+      "otherHolder": "Another plugin holds this instance's address for MCP clients, so a client reaches that plugin and not the connector."
+    },
+    "actions": {
+      "heading": "What connected apps may do",
+      "body": "A connected app is offered the actions this instance offers connected apps, as the member who connected it and never beyond what that member may do. A plugin's actions are offered only once the administrator arms them, on the plugin's own screen.",
+      "armed": "Armed actions, under Plugins",
+      "connectedApps": "Connected apps"
+    }
   }
 }

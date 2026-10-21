@@ -14,10 +14,12 @@
     "types": ["node"],
     "module": "Preserve",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
     // NestJS reads the route decorators below. The bundler compiles them as
     // TypeScript's legacy decorators, which is what NestJS is written for.
     "experimentalDecorators": true,
     "noEmit": true
   },
-  "include": ["src", "test", "scripts"]
+  "include": ["src", "test", "scripts", "vite.config.ts", "vitest.config.ts"]
 }

@@ -74,6 +74,30 @@ kept. No licence verifies against it until Apteo's issuing key replaces it.
 
 The code is licensed under the [AGPL-3.0](LICENSE).
 
+## The connector's screen
+
+The connector's view, at `/app/plugin/mcp-connector`, is offered in the board's
+section of the navigation. It shows three things:
+
+- **The licence.** The host's finding, with the dates and the licence id it
+  carries. From thirty days before an active licence ends, the screen says how
+  many days are left, counted on the Stockholm calendar day the host judges a
+  licence by. Without an active licence it says the connector is dormant, that
+  the board enters a licence on the instance's licence screen, and links to the
+  issuer the manifest names. On a host without `host.entitlements` or
+  `host.actions.client` it asks for the instance to be updated.
+- **The address for MCP clients.** The `resource` in the instance's
+  `/.well-known/oauth-protected-resource`, which is the address every token is
+  issued for. If another plugin holds the instance's protected resource, the
+  screen says so rather than show an address that reaches that plugin.
+- **What connected apps may do.** Links to the armed actions on the core's
+  plugins screen and to the connected apps.
+
+The view reads the licence from the connector's own route,
+`GET /api/plugin/mcp-connector/status`. The route requires `association:read`,
+the board's reading of how the instance is configured, and refuses a connected
+app: a client is told no more than that a licence is required.
+
 ## Development
 
 ```sh
@@ -88,7 +112,12 @@ Fastify, behind a stand-in for the host's Bearer gate, action registry and
 licence. It connects three MCP clients to it over HTTP: the SDK v2 client on
 2026-07-28, the same client on the 2025 handshake, and the SDK v1 client. It
 also runs the MCP project's conformance runner on the scenarios that apply to
-any server.
+any server. The view is rendered into a DOM with the connector's translations,
+against stand-ins for the two documents it reads.
+
+`pnpm build` builds the view first, with Vite, as the Module Federation remote
+`dist/remoteEntry.js`. React, ReactDOM, i18next and react-i18next are shared
+singletons, the host's own copies.
 
 The server entry point is one CommonJS bundle, `dist/server.cjs`. The MCP SDK is
 bundled into it. Its only externals are `@nestjs/common`, `zod` and Node's
