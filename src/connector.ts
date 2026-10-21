@@ -8,11 +8,18 @@ import {
 import type { ActionRequest } from "@openbrf/plugin-sdk";
 
 import {
+  type ActionClient,
   type ActionWithSchemas,
   type ConnectorHost,
   isActionRefusal,
   listWithSchemas,
 } from "./host-contract.ts";
+import {
+  type Language,
+  languageOf,
+  type MessageKey,
+  translate,
+} from "./messages.ts";
 import { toolFor } from "./tools.ts";
 
 /**
@@ -49,11 +56,9 @@ export const NOT_SERVED_CODE = -32050;
 /** Why the connector answers a request without serving it. */
 export type NotServedReason = "entitlement-required" | "host-unsupported";
 
-const NOT_SERVED_MESSAGES: Record<NotServedReason, string> = {
-  "entitlement-required":
-    "The MCP Connector is not licensed on this instance. The board enters a licence on the instance's licence screen.",
-  "host-unsupported":
-    "This instance is older than the MCP Connector. Update the instance to use it.",
+const NOT_SERVED_MESSAGES: Record<NotServedReason, MessageKey> = {
+  "entitlement-required": "errors.entitlementRequired",
+  "host-unsupported": "errors.hostUnsupported",
 };
 
 /**
@@ -62,6 +67,10 @@ const NOT_SERVED_MESSAGES: Record<NotServedReason, string> = {
  * `request` is the web-standard request the SDK reads; `hostRequest` is the
  * request the host's own route received, which is the only thing dispatch
  * takes. `parsedBody` is the body the host has already parsed.
+ *
+ * The connector's own sentences are in the language the request's
+ * `Accept-Language` asks for, and Swedish otherwise. The reason codes beside
+ * them are what a client should act on.
  */
 export async function serveMcp(
   host: ConnectorHost,
@@ -69,22 +78,25 @@ export async function serveMcp(
   request: Request,
   parsedBody: unknown,
 ): Promise<Response> {
-  if (!isConnectedAppRequest(hostRequest)) {
-    return tokenRequired();
+  const language = languageOf(request.headers.get("accept-language"));
+  const app = connectedApp(host, hostRequest);
+  if (app === null) {
+    return tokenRequired(language);
   }
 
   // A request without a body to read is a 2025-era session operation, which
   // stateless serving answers with 405 whatever the licence says.
   if (request.method === "POST") {
-    const reason = await notServedReason(host);
+    const reason =
+      app === "unknown" ? "host-unsupported" : await notServedReason(host);
     if (reason !== null) {
-      return notServed(parsedBody, reason);
+      return notServed(parsedBody, reason, language);
     }
   }
 
   const refused: { challenge?: string } = {};
   const handler = createMcpHandler(
-    () => buildServer(host, hostRequest, refused),
+    () => buildServer(host, hostRequest, refused, language),
     { legacy: "stateless" },
   );
   try {
@@ -97,7 +109,7 @@ export async function serveMcp(
      */
     const body = await response.arrayBuffer();
     if (refused.challenge !== undefined) {
-      return insufficientScope(refused.challenge);
+      return insufficientScope(refused.challenge, language);
     }
     return new Response(body.byteLength === 0 ? null : body, {
       status: response.status,
@@ -110,21 +122,27 @@ export async function serveMcp(
 }
 
 /**
- * Whether the host admitted this request on a connected app's token.
+ * The connected app the host admitted this request for, null when it was
+ * admitted on the browser's session, or "unknown" on a host that cannot say.
  *
- * The host makes the connector's route Bearer-only, so this holds for every
- * request it serves. It is checked again because a connector installed while
- * another plugin holds the instance's protected resource is served like any
- * plugin, on the browser's session: answering MCP there would let a page the
- * member has open act as them without a connected app being involved.
+ * The host makes the connector's route Bearer-only, so a request it serves
+ * comes from a connected app. It is asked again because a connector installed
+ * while another plugin holds the instance's protected resource is served like
+ * any plugin, on the browser's session: answering MCP there would let a page
+ * the member has open act as them without a connected app being involved.
  *
- * Read off the request structurally: these are the host's own fields, set on
- * the request before the route runs, and a plugin has no package to import
- * them from. The token itself is never on it, only the app it was issued to.
+ * `host.actions.client` answers from what the host established when it
+ * authenticated the request, as dispatch does. A host from before it cannot
+ * tell the two apart, so the connector serves nothing there.
  */
-export function isConnectedAppRequest(hostRequest: ActionRequest): boolean {
-  const token = (hostRequest as { token?: { clientId?: unknown } }).token;
-  return typeof token?.clientId === "string" && token.clientId.length > 0;
+export function connectedApp(
+  host: ConnectorHost,
+  hostRequest: ActionRequest,
+): ActionClient | null | "unknown" {
+  if (typeof host.actions.client !== "function") {
+    return "unknown";
+  }
+  return host.actions.client(hostRequest);
 }
 
 /**
@@ -149,16 +167,29 @@ async function notServedReason(
  *
  * Thrown from inside a handler, so `initialize` and `ping` still work on such
  * a host and only the requests that need a tool say what is wrong.
+ *
+ * A listing that fails is answered as an internal error without its message,
+ * as a failed call is: the SDK would otherwise send the client whatever the
+ * host threw, which may hold the host's internals.
  */
 async function listed(
   host: ConnectorHost,
   hostRequest: ActionRequest,
+  language: Language,
 ): Promise<ActionWithSchemas[]> {
-  const actions = await listWithSchemas(host, hostRequest);
+  let actions: ActionWithSchemas[] | null;
+  try {
+    actions = await listWithSchemas(host, hostRequest);
+  } catch {
+    throw new ProtocolError(
+      ProtocolErrorCode.InternalError,
+      translate(language, "errors.requestFailed"),
+    );
+  }
   if (actions === null) {
     throw new ProtocolError(
       NOT_SERVED_CODE,
-      NOT_SERVED_MESSAGES["host-unsupported"],
+      translate(language, NOT_SERVED_MESSAGES["host-unsupported"]),
       { reason: "host-unsupported" satisfies NotServedReason },
     );
   }
@@ -169,13 +200,14 @@ function buildServer(
   host: ConnectorHost,
   hostRequest: ActionRequest,
   refused: { challenge?: string },
+  language: Language,
 ): Server {
   const server = new Server(SERVER_INFO, {
     capabilities: { tools: { listChanged: false } },
   });
 
   server.setRequestHandler("tools/list", async () => ({
-    tools: (await listed(host, hostRequest)).map(toolFor),
+    tools: (await listed(host, hostRequest, language)).map(toolFor),
   }));
 
   server.setRequestHandler("tools/call", async (request) => {
@@ -187,18 +219,21 @@ function buildServer(
      * name - a call cannot be used to ask what the instance has. The listing
      * is also what holds the output schema the result is shaped against.
      */
-    const offered = (await listed(host, hostRequest)).find(
+    const offered = (await listed(host, hostRequest, language)).find(
       (action) => action.name === name,
     );
     if (offered === undefined) {
-      throw new ProtocolError(ProtocolErrorCode.InvalidParams, "Unknown tool.");
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
+        translate(language, "errors.unknownTool"),
+      );
     }
 
     let output: unknown;
     try {
       output = await host.actions.invoke(hostRequest, name, input ?? {});
     } catch (cause) {
-      return refusalResult(cause, refused);
+      return refusalResult(cause, refused, language);
     }
 
     return server.projectCallToolResult(
@@ -230,11 +265,12 @@ function buildServer(
 export function refusalResult(
   cause: unknown,
   refused: { challenge?: string },
+  language: Language,
 ): CallToolResult {
   if (!isActionRefusal(cause)) {
     throw new ProtocolError(
       ProtocolErrorCode.InternalError,
-      "The call failed.",
+      translate(language, "errors.callFailed"),
     );
   }
   if (cause.challenge !== undefined) {
@@ -275,6 +311,7 @@ export function refusalResult(
 export function notServed(
   parsedBody: unknown,
   reason: NotServedReason,
+  language: Language,
 ): Response {
   const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
   if (!messages.every(isJsonRpcMessage)) {
@@ -283,7 +320,7 @@ export function notServed(
       id: null,
       error: {
         code: ProtocolErrorCode.InvalidRequest,
-        message: "The body is not a JSON-RPC message.",
+        message: translate(language, "errors.notJsonRpc"),
       },
     });
   }
@@ -294,7 +331,7 @@ export function notServed(
       id: message.id,
       error: {
         code: NOT_SERVED_CODE,
-        message: NOT_SERVED_MESSAGES[reason],
+        message: translate(language, NOT_SERVED_MESSAGES[reason]),
         data: { reason },
       },
     }));
@@ -314,18 +351,18 @@ function isJsonRpcMessage(
   );
 }
 
-function tokenRequired(): Response {
+function tokenRequired(language: Language): Response {
   return json(403, {
     error: "invalid_request",
-    error_description: "This route serves connected apps only.",
+    error_description: translate(language, "errors.connectedAppsOnly"),
   });
 }
 
-function insufficientScope(challenge: string): Response {
+function insufficientScope(challenge: string, language: Language): Response {
   return new Response(
     JSON.stringify({
       error: "insufficient_scope",
-      error_description: "The connected app's access does not cover this.",
+      error_description: translate(language, "errors.insufficientScope"),
     }),
     {
       status: 403,

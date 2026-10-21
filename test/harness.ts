@@ -26,7 +26,8 @@ import type {
  *
  * - the Bearer-only gate on the protected resource, which answers 401 without
  *   a token and otherwise marks the request with the person and the app;
- * - the action listing and dispatch, with the host's refusal shapes;
+ * - the action listing and dispatch, with the host's refusal shapes, and
+ *   `actions.client`, answered from the gate's mark;
  * - the licence finding.
  *
  * The real gate and registry are the host's own and are tested there.
@@ -238,6 +239,10 @@ export interface HostState {
   entitlement: EntitlementState | undefined;
   /** Whether `actions.list` carries each action's schemas. */
   schemas: boolean | "partial";
+  /** Whether the host has `actions.client`. */
+  client: boolean;
+  /** What `actions.list` rejects with instead of answering, if anything. */
+  listFailure?: Error;
   /** Every call the connector dispatched. */
   invoked: { name: string; input: unknown; clientId: string | undefined }[];
 }
@@ -245,18 +250,33 @@ export interface HostState {
 export function standInHost(state: HostState): ConnectorHost {
   const actions = {
     register: () => undefined,
-    list: async () =>
-      ACTIONS.map(
+    list: async () => {
+      if (state.listFailure !== undefined) {
+        throw state.listFailure;
+      }
+      return ACTIONS.map(
         ({ inputSchema: _in, outputSchema: _out, ...summary }, index) =>
           state.schemas === true || (state.schemas === "partial" && index === 0)
             ? { ...summary, inputSchema: _in, outputSchema: _out }
             : summary,
-      ),
+      );
+    },
     invoke: async (request: object, name: string, input: unknown) => {
       const marked = request as MarkedRequest;
       state.invoked.push({ name, input, clientId: marked.token?.clientId });
       return invoke(marked, name, input);
     },
+    // The stand-in gate's own mark, which it alone writes.
+    ...(state.client
+      ? {
+          client: (request: object) => {
+            const { token } = request as MarkedRequest;
+            return token === undefined
+              ? null
+              : { clientId: token.clientId, clientHost: "client.example" };
+          },
+        }
+      : {}),
   };
   return {
     id: "mcp-connector",
@@ -291,6 +311,7 @@ export async function startInstance(
   const state: HostState = {
     entitlement: ACTIVE,
     schemas: true,
+    client: true,
     invoked: [],
     ...initial,
   };

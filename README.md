@@ -20,7 +20,8 @@ the call.
   Signing in, consent, scopes and revoking an app are all the host's. The
   connector also refuses a request the host admitted on the browser's session,
   which can happen only when another plugin holds the instance's protected
-  resource.
+  resource. It asks `host.actions.client(request)` which connected app the host
+  authenticated the request for, and answers `403` when there is none.
 - **Tools.** `tools/list` is `host.actions.list(request)`: the actions the
   registry offers this member through this app, each with its JSON Schema
   (draft 2020-12, as the host publishes it). The four MCP hints follow the
@@ -38,6 +39,11 @@ the call.
   It serves the 2026-07-28 revision, and 2025-era clients through the SDK's
   stateless fallback. Sessions and server-sent event streams are not offered:
   `GET` and `DELETE` are answered `405`.
+- **Errors.** A listing or a call that fails other than by a refusal is
+  answered as a JSON-RPC internal error with a sentence of the connector's own,
+  never with what the host threw. The connector's sentences are in `locales/`,
+  in English when the request's `Accept-Language` puts English first and in
+  Swedish otherwise. A client acts on `data.reason`, not on the sentence.
 
 ## Licence
 
@@ -59,7 +65,9 @@ from an unlicensed one, so the connector stays dormant there too. A host whose
 `host.actions.list` entries carry no `inputSchema` and `outputSchema` is
 answered with `data.reason` `host-unsupported` to `tools/list` and `tools/call`;
 `initialize` and `ping` still work. An empty listing cannot be told apart from
-one such a host gives, and offers no tools either way.
+one such a host gives, and offers no tools either way. A host without
+`host.actions.client` cannot say whether a connected app sent a request, so
+every `POST` there is answered with `host-unsupported`, `initialize` included.
 
 The issuer key in `package.json` is a placeholder whose private half was never
 kept. No licence verifies against it until Apteo's issuing key replaces it.
@@ -94,7 +102,8 @@ specification, so upgrade it deliberately and run the conformance tests.
 ### Host members newer than the SDK release
 
 The connector builds against `@openbrf/plugin-sdk` 1.0.0. The schemas on a `host.actions.list` entry,
-`host.entitlements` and the shape of an `ActionRefusal` came later.
+`host.actions.client`, `host.entitlements` and the shape of an `ActionRefusal`
+came later.
 `src/host-contract.ts` declares them as the SDK does, and the connector checks for
 each one at run time, because an older host does not have it. Replace those
 declarations with the SDK's own exports once a release carries them.
