@@ -219,17 +219,25 @@ function Panel({
   );
 }
 
-function Fact({
-  label,
-  value,
-}: {
+/**
+ * One label and its value. A date or an id is register data, in the data
+ * face; a value the licence leaves out is said in words, in the interface's.
+ */
+interface FactRow {
   label: string;
-  value: string;
-}): ReactElement {
+  value: string | null;
+  none?: string;
+}
+
+function Fact({ label, value, none }: FactRow): ReactElement {
   return (
     <>
       <dt style={styles.factLabel}>{label}</dt>
-      <dd style={styles.factValue}>{value}</dd>
+      {value === null ? (
+        <dd style={{ margin: 0 }}>{none}</dd>
+      ) : (
+        <dd style={styles.factValue}>{value}</dd>
+      )}
     </>
   );
 }
@@ -241,17 +249,19 @@ function LicenceFacts({
   licence: EntitlementState;
 }): ReactElement | null {
   const { t } = useTranslation(NAMESPACE);
-  const facts: [string, string][] = [];
+  const facts: [string, string | null, string?][] = [];
   switch (licence.status) {
     case "active":
       facts.push(
         [
           t("view.licence.validUntil"),
-          licence.validUntil ?? t("view.licence.noEnd"),
+          licence.validUntil,
+          t("view.licence.noEnd"),
         ],
         [
           t("view.licence.updatesUntil"),
-          licence.updatesUntil ?? t("view.licence.everyRelease"),
+          licence.updatesUntil,
+          t("view.licence.everyRelease"),
         ],
       );
       break;
@@ -280,8 +290,8 @@ function LicenceFacts({
   }
   return (
     <dl style={styles.facts}>
-      {facts.map(([label, value]) => (
-        <Fact key={label} label={label} value={value} />
+      {facts.map(([label, value, none]) => (
+        <Fact key={label} label={label} value={value} none={none} />
       ))}
     </dl>
   );
@@ -289,31 +299,34 @@ function LicenceFacts({
 
 function Licence({ status }: { status: ConnectorStatus }): ReactElement {
   const { t } = useTranslation(NAMESPACE);
-  const { licence, endsInDays, issuer } = status;
+  const { hostSupported, licence, endsInDays, issuer } = status;
   const active = licence?.status === "active";
   /*
    * Where to get a licence is said when the board needs a new one: none is
-   * active, or the active one is about to end. An instance too old to judge a
+   * active, or the active one is about to end. An instance that judges no
    * licence is helped only by an update, so it is not said there.
    */
   const needsLicence = licence !== null && (!active || endsInDays !== null);
-  const finding =
-    licence === null
-      ? t("view.licence.hostUnsupported")
-      : t(`view.licence.status.${licence.status}`);
 
   return (
     <>
-      <p
-        style={
-          active
-            ? { ...styles.finding, ...styles.findingActive }
-            : styles.finding
-        }
-      >
-        {finding}
-      </p>
-      {licence === null ? null : <LicenceFacts licence={licence} />}
+      {hostSupported ? null : (
+        <p style={styles.finding}>{t("view.licence.hostUnsupported")}</p>
+      )}
+      {licence === null ? null : (
+        <>
+          <p
+            style={
+              active
+                ? { ...styles.finding, ...styles.findingActive }
+                : styles.finding
+            }
+          >
+            {t(`view.licence.status.${licence.status}`)}
+          </p>
+          <LicenceFacts licence={licence} />
+        </>
+      )}
       {endsInDays === null ? null : (
         <p style={styles.attention}>
           {endsInDays === 0
@@ -321,7 +334,9 @@ function Licence({ status }: { status: ConnectorStatus }): ReactElement {
             : t("view.licence.endsIn", { count: endsInDays })}
         </p>
       )}
-      {active ? null : <p style={styles.text}>{t("view.licence.dormant")}</p>}
+      {licence === null || active ? null : (
+        <p style={styles.text}>{t("view.licence.dormant")}</p>
+      )}
       {needsLicence ? (
         <>
           <p style={styles.muted}>{t("view.licence.enter")}</p>

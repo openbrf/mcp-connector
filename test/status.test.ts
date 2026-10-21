@@ -19,7 +19,12 @@ function activeUntil(validUntil: string | null): EntitlementState {
 }
 
 function endsInDays(licence: EntitlementState | null, today: string) {
-  return connectorStatus(licence, today, ISSUER).endsInDays;
+  return connectorStatus({
+    hostSupported: true,
+    licence,
+    today,
+    issuer: ISSUER,
+  }).endsInDays;
 }
 
 describe("the status the screen reads", () => {
@@ -29,16 +34,16 @@ describe("the status the screen reads", () => {
       licenceId: "lic-1",
       validUntil: "2026-09-30",
     };
-    expect(connectorStatus(licence, "2026-10-20", ISSUER)).toEqual({
+    expect(
+      connectorStatus({
+        hostSupported: true,
+        licence,
+        today: "2026-10-20",
+        issuer: ISSUER,
+      }),
+    ).toEqual({
+      hostSupported: true,
       licence,
-      endsInDays: null,
-      issuer: ISSUER,
-    });
-  });
-
-  it("is null for a host that cannot judge a licence", () => {
-    expect(connectorStatus(null, "2026-10-20", ISSUER)).toEqual({
-      licence: null,
       endsInDays: null,
       issuer: ISSUER,
     });

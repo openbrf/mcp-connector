@@ -27,11 +27,17 @@ afterEach(async () => {
   instance = undefined;
 });
 
+const EXPIRED: EntitlementState = {
+  status: "expired",
+  licenceId: "lic-1",
+  validUntil: "2026-09-30",
+};
+
 async function readStatus(
-  entitlement: EntitlementState | undefined,
+  host: { entitlement: EntitlementState | undefined; client?: boolean },
   headers: Record<string, string> = {},
 ): Promise<Response> {
-  instance = await startInstance({ entitlement });
+  instance = await startInstance(host);
   return fetch(new URL("/api/plugin/mcp-connector/status", instance.url), {
     headers,
   });
@@ -39,33 +45,40 @@ async function readStatus(
 
 describe("the status route", () => {
   it("answers with the host's finding and the manifest's issuer", async () => {
-    const licence: EntitlementState = {
-      status: "expired",
-      licenceId: "lic-1",
-      validUntil: "2026-09-30",
-    };
-    const response = await readStatus(licence);
+    const response = await readStatus({ entitlement: EXPIRED });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      licence,
+      hostSupported: true,
+      licence: EXPIRED,
       endsInDays: null,
       issuer: manifest.openbrf.licence.issuer,
     });
   });
 
-  it("answers null on a host that cannot judge a licence", async () => {
-    const response = await readStatus(undefined);
+  it("says a host without the licence finding is not supported", async () => {
+    const response = await readStatus({ entitlement: undefined });
 
     expect(response.status).toBe(200);
-    expect(((await response.json()) as { licence: unknown }).licence).toBe(
-      null,
-    );
+    expect(await response.json()).toMatchObject({
+      hostSupported: false,
+      licence: null,
+    });
+  });
+
+  it("says a host that cannot tell a connected app is not supported, licence or not", async () => {
+    const response = await readStatus({ entitlement: EXPIRED, client: false });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      hostSupported: false,
+      licence: EXPIRED,
+    });
   });
 
   it("refuses a connected app, which is told no more than that a licence is required", async () => {
     const response = await readStatus(
-      { status: "absent" },
+      { entitlement: { status: "absent" } },
       { authorization: "Bearer read" },
     );
 
@@ -79,7 +92,12 @@ describe("the status route", () => {
       createPlugin: PluginModuleFactory;
     };
     const module = await createPlugin(
-      standInHost({ entitlement: undefined, schemas: true, invoked: [] }),
+      standInHost({
+        entitlement: undefined,
+        schemas: true,
+        client: true,
+        invoked: [],
+      }),
     );
     const byPath = new Map(
       (module.controllers ?? []).map((controller) => [

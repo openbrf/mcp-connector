@@ -12,7 +12,7 @@ import {
 } from "@nestjs/common";
 import type { PluginHost, PluginModuleFactory } from "@openbrf/plugin-sdk";
 
-import { isConnectedAppRequest, serveMcp } from "./connector.ts";
+import { connectedApp, serveMcp } from "./connector.ts";
 import type { ConnectorHost } from "./host-contract.ts";
 import {
   type ConnectorStatus,
@@ -166,22 +166,28 @@ export const createPlugin: PluginModuleFactory = (
    *
    * A connected app is refused even with a capability that would admit it.
    * The licence's state and dates are the board's to read, and the MCP route
-   * tells a client no more than that a licence is required.
+   * tells a client no more than that a licence is required. A host without
+   * `actions.client` cannot say who sent the request, and is answered: the
+   * route is behind its session guard all the same, and the screen is what
+   * tells the board that such an instance needs updating.
    */
   @Controller(STATUS_PATH)
   @SetMetadata(REQUIRED_CAPABILITIES, ["association:read"])
   class StatusController {
     @Get()
     async get(@Req() request: HostRequest): Promise<ConnectorStatus> {
-      if (isConnectedAppRequest(request)) {
+      const app = connectedApp(host, request);
+      if (app !== null && app !== "unknown") {
         throw new ForbiddenException();
       }
-      const licence = (await host.entitlements?.get()) ?? null;
-      return connectorStatus(
-        licence,
-        stockholmToday(new Date()),
-        LICENCE_ISSUER,
-      );
+      return connectorStatus({
+        hostSupported:
+          host.entitlements !== undefined &&
+          typeof host.actions.client === "function",
+        licence: (await host.entitlements?.get()) ?? null,
+        today: stockholmToday(new Date()),
+        issuer: LICENCE_ISSUER,
+      });
     }
   }
 

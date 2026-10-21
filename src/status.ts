@@ -29,10 +29,12 @@ export interface LicenceIssuer {
 /** What `GET /api/plugin/mcp-connector/status` answers. */
 export interface ConnectorStatus {
   /**
-   * The host's finding on the licence, or null on a host too old to judge
-   * one. The connector is dormant on such a host, as it is without an active
-   * licence.
+   * Whether the host has what the connector reads to serve a client: the
+   * licence finding and `actions.client`. A host without either is older than
+   * the connector, which serves no client there whatever the licence says.
    */
+  readonly hostSupported: boolean;
+  /** The host's finding on the licence, or null on a host that judges none. */
   readonly licence: EntitlementState | null;
   /**
    * The days from today to the last day of an active licence that ends within
@@ -43,12 +45,19 @@ export interface ConnectorStatus {
   readonly issuer: LicenceIssuer;
 }
 
-export function connectorStatus(
-  licence: EntitlementState | null,
-  today: string,
-  issuer: LicenceIssuer,
-): ConnectorStatus {
-  return { licence, endsInDays: endsInDays(licence, today), issuer };
+export function connectorStatus(input: {
+  hostSupported: boolean;
+  licence: EntitlementState | null;
+  today: string;
+  issuer: LicenceIssuer;
+}): ConnectorStatus {
+  const { hostSupported, licence, today, issuer } = input;
+  return {
+    hostSupported,
+    licence,
+    endsInDays: endsInDays(licence, today),
+    issuer,
+  };
 }
 
 /**

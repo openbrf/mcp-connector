@@ -59,6 +59,7 @@ function serve({ status = {}, resource = { resource: ADDRESS } }: Served = {}) {
       return typeof status === "number"
         ? new Response("", { status })
         : Response.json({
+            hostSupported: true,
             licence: ACTIVE,
             endsInDays: null,
             issuer: ISSUER,
@@ -96,11 +97,7 @@ describe("the licence", () => {
     show();
 
     const panel = screen.getByRole("region", { name: "Licens" });
-    expect(
-      await within(panel).findByText(
-        "Licensierad. MCP Connector betjänar anslutna appar.",
-      ),
-    ).toBeTruthy();
+    expect(await within(panel).findByText("Licensen är aktiv.")).toBeTruthy();
     expect(facts(panel)).toEqual([
       "Giltig till och med: 2027-11-30",
       "Täcker versioner till och med: Alla versioner",
@@ -112,6 +109,8 @@ describe("the licence", () => {
     expect(within(panel).getByText("lic-2026-0042").style.fontFamily).toBe(
       "var(--obrf-font-data)",
     );
+    // What the licence leaves out is said in words, which are not.
+    expect(within(panel).getByText("Alla versioner").style.fontFamily).toBe("");
   });
 
   it("says when an active licence ends, from thirty days before, and where to renew it", async () => {
@@ -201,17 +200,30 @@ describe("the licence", () => {
     expect(within(panel).getByText(/^Utan en aktiv licens är/)).toBeTruthy();
   });
 
-  it("asks for an update on an instance too old to judge a licence", async () => {
-    serve({ status: { licence: null } });
+  it("asks for an update on an instance that judges no licence", async () => {
+    serve({ status: { hostSupported: false, licence: null } });
     show();
 
     const panel = screen.getByRole("region", { name: "Licens" });
     expect(
-      await within(panel).findByText(/^Instansen är för gammal/),
+      await within(panel).findByText(/^Instansen är äldre än MCP Connector/),
     ).toBeTruthy();
     // Entering a licence would change nothing there.
     expect(within(panel).queryByText(/licenssida/)).toBeNull();
     expect(within(panel).queryByRole("link")).toBeNull();
+    expect(within(panel).queryByText(/^Utan en aktiv licens är/)).toBeNull();
+  });
+
+  it("asks for an update on an instance too old to serve, even with an active licence", async () => {
+    serve({ status: { hostSupported: false } });
+    show();
+
+    const panel = screen.getByRole("region", { name: "Licens" });
+    expect(
+      await within(panel).findByText(/^Instansen är äldre än MCP Connector/),
+    ).toBeTruthy();
+    expect(within(panel).getByText("Licensen är aktiv.")).toBeTruthy();
+    expect(within(panel).queryByText(/^Utan en aktiv licens är/)).toBeNull();
   });
 
   it("links to the issuer only over HTTPS", async () => {
@@ -323,7 +335,7 @@ describe("the actions", () => {
     for (const link of [armed, apps]) {
       expect(link.style.minHeight).toBe("44px");
     }
-    await screen.findByText(/^Licensierad\./);
+    await screen.findByText("Licensen är aktiv.");
   });
 });
 
