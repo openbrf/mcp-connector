@@ -53,8 +53,12 @@ on:
   push:
     tags: ["v*"]
 
+# One group per tag: a group keeps one running and one pending run, and a
+# third run replaces the pending one even without `cancel-in-progress`, so a
+# shared group would drop a tagged version's release. A re-run of the same
+# tag still waits for the first.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
