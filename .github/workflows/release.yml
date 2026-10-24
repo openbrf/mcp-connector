@@ -28,12 +28,25 @@
 #
 # - `SOURCE_DEPLOY_KEY` is a secret of the `release` environment, whose
 #   deployment rule allows only `v*` tags. It is a read-only deploy key on
-#   apteoab/openbrf-modules, so it reads that repository and nothing else.
+#   apteoab/openbrf-modules: it reads every module in that repository, not
+#   only the connector, and writes nothing.
 # - The source is checked out with `persist-credentials: false`, so the key is
-#   not left where the build could read it.
+#   not left where the build could read it. The job still runs the source's
+#   install, tests and build while it holds the key, so the key is rotated
+#   whenever a dependency of that build is reported compromised.
 # - The job that holds the key builds, without `id-token` or `attestations`.
 #   The job that attests and publishes has those and not the key, and takes
 #   the tarball from the first.
+#
+# The pin is only a commit id, and outside reviewers cannot read the commit it
+# names. So the run builds nothing that is not on the source's `main`, and it
+# checks that before any of the source's code runs.
+#
+# This repository is public, and so are its run logs. A failing check or
+# build prints the source lines it failed on, so the output of every step that
+# runs the source's own scripts goes to a file on the runner, and the log says
+# only which step failed. Run that step in a checkout of the pinned commit to
+# see why.
 name: Release
 
 on:
@@ -91,13 +104,29 @@ jobs:
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
+      # The source's main, not the pinned commit: any commit the key can
+      # fetch, from an unmerged branch or a pull request, could be named by
+      # its id, so the pin has to be shown to be on main first.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: apteoab/openbrf-modules
-          ref: ${{ steps.pin.outputs.commit }}
+          ref: main
           path: source
+          # Whole history, to tell whether the pinned commit is on main.
+          fetch-depth: 0
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
+
+      - name: Check out the pinned commit
+        working-directory: source
+        env:
+          COMMIT: ${{ steps.pin.outputs.commit }}
+        run: |
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "::error::source.json pins $COMMIT, which is not on the main branch of apteoab/openbrf-modules. Pin a commit of main."
+            exit 1
+          fi
+          git checkout --quiet --detach "$COMMIT"
 
       # The pnpm version is read from `packageManager` in the source's
       # package.json.
@@ -129,8 +158,10 @@ jobs:
       - name: Typecheck and test
         working-directory: source/modules/mcp-connector
         run: |
-          pnpm typecheck
-          pnpm test
+          if ! { pnpm typecheck && pnpm test; } > "$RUNNER_TEMP/test.log" 2>&1; then
+            echo "::error::The typecheck or the tests failed. Their output is kept out of this public log: run pnpm typecheck and pnpm test in a checkout of the pinned commit to see why."
+            exit 1
+          fi
 
       # Builds from scratch with the pin copied in, packs, and runs the
       # package check over the very tarball handed on.
@@ -138,7 +169,10 @@ jobs:
         id: pack
         working-directory: source/modules/mcp-connector
         run: |
-          pnpm release:pack "$GITHUB_WORKSPACE/release/source.json" "$RUNNER_TEMP/release"
+          if ! pnpm release:pack "$GITHUB_WORKSPACE/release/source.json" "$RUNNER_TEMP/release" > "$RUNNER_TEMP/pack.log" 2>&1; then
+            echo "::error::Building or packing failed. The output is kept out of this public log: run pnpm release:pack in a checkout of the pinned commit to see why."
+            exit 1
+          fi
           file=$(cd "$RUNNER_TEMP/release" && ls -- *.tgz)
           echo "file=$file" >> "$GITHUB_OUTPUT"
 

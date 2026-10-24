@@ -30,8 +30,9 @@ been released yet.
 - **The source** is named by the `source.json` packed in the tarball, a copy of
   this repository's `source.json` at the tagged commit. It is Apteo's
   statement of the commit the tarball was built from, kept in this
-  repository's public history. Whoever can read the source can check out that
-  commit and build it with the same steps.
+  repository's public history. The workflow builds only a commit on the main
+  branch of apteoab/openbrf-modules. Whoever can read the source can check out
+  that commit and build it with the same steps.
 
 ## Releasing
 
@@ -49,9 +50,14 @@ been released yet.
    version is the one the pinned commit's package states.
 
 The workflow refuses a tag that is not on `main` or does not match the
-version, checks out the pinned commit, runs the connector's tests, packs it
-with the pin copied in unchanged, attests the tarball and publishes the
-release. Its job summary gives the sha512 and size for the catalog entry.
+version, and a pin that is not on the main branch of apteoab/openbrf-modules.
+It checks out the pinned commit, runs the connector's typecheck and tests,
+packs it with the pin copied in unchanged, attests the tarball and publishes
+the release. Its job summary gives the sha512 and size for the catalog entry.
+
+The run logs of this repository are public, so the output of the source's
+typecheck, tests and build stays out of them. A failed release says which step
+failed; running that step in a checkout of the pinned commit shows why.
 
 The workflow relies on these repository settings:
 
@@ -59,7 +65,8 @@ The workflow relies on these repository settings:
 - a tag ruleset lets only the maintainers create a `v*` tag, and nobody move or
   delete one;
 - the `release` environment allows only `v*` tags and holds
-  `SOURCE_DEPLOY_KEY`, a read-only deploy key on apteoab/openbrf-modules.
+  `SOURCE_DEPLOY_KEY`, a read-only deploy key on apteoab/openbrf-modules. The
+  key reads every module in that repository, not only the connector.
 
 ## Licence
 
