@@ -10,7 +10,8 @@
 #   }
 #
 # To release: move `source.json` to the commit to release in a pull request,
-# merge it, then push the tag from main while main still pins that commit:
+# merge it, set a fresh `SOURCE_ARCHIVE_KEY` (see the README), then push the
+# tag from main while main still pins that commit:
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
@@ -24,21 +25,23 @@
 # `source.json` at the tagged commit. So this starts on the tag push and
 # nowhere else, and the pin is copied into the package unchanged.
 #
-# The run takes two secrets of the `release` environment, which allows only
-# `v*` tags and waits for a maintainer's approval before each job that uses
-# it. The source's install, tests and build run third-party code, and any step
-# of a job can read every secret that job references, so each secret is in
-# the fewest jobs that need it:
+# The source's install, tests and build run third-party code, and any step of
+# a job can read every secret that job references, so each secret is in the
+# fewest jobs that need it, and the two jobs that hold one run in environments
+# of their own. Each allows only `v*` tags and waits for a maintainer's
+# approval, so the approver sees which of the two they let run:
 #
-# - `fetch` holds `SOURCE_DEPLOY_KEY`, a read-only deploy key on
-#   apteoab/openbrf-modules that reads every module there, not only the
-#   connector. It runs no Node and installs nothing. It checks the pin, takes
-#   the pinned commit alone, without history, and seals it with
-#   `SOURCE_ARCHIVE_KEY`: an artifact of a public repository can be downloaded
-#   by anyone signed in to GitHub.
-# - `build` holds `SOURCE_ARCHIVE_KEY` to unseal that commit, and not the
-#   deploy key. The archive key is rotated whenever a dependency of the source
-#   is reported compromised.
+# - `fetch`, in `release-source`, holds `SOURCE_DEPLOY_KEY`, a read-only
+#   deploy key on apteoab/openbrf-modules that reads every module there, not
+#   only the connector. It runs no Node and installs nothing. It checks the
+#   pin, takes the files the connector's build needs from the pinned commit
+#   alone, without history or the other modules, and seals them with
+#   `SOURCE_ARCHIVE_KEY`: an artifact of a public repository can be
+#   downloaded by anyone signed in to GitHub while the run lasts.
+# - `build`, in `release-build`, holds `SOURCE_ARCHIVE_KEY` to unseal them,
+#   and not the deploy key, which that environment does not hold. A
+#   maintainer sets a fresh archive key before each release, so a key the
+#   source's code read in one run opens no later run's artifact.
 # - `publish` attests and publishes, with `id-token` and `attestations` and no
 #   secret. `cleanup` deletes the run's artifacts once it ends, however it
 #   ends.
@@ -80,13 +83,12 @@ jobs:
     name: Fetch the pinned source
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release
+    environment: release-source
     permissions:
       contents: read
     outputs:
       commit: ${{ steps.pin.outputs.commit }}
       digest: ${{ steps.seal.outputs.digest }}
-      artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -158,29 +160,36 @@ jobs:
 
       # The pinned commit alone, without the history before it, in a
       # repository of its own, so `release:pack` can tell that it builds that
-      # commit unchanged.
+      # commit unchanged. Only the root files and the connector's directory
+      # are checked out, and the repository is fetched without file contents,
+      # so it takes in only the contents of the files checked out: the sealed
+      # source names the other modules' files and holds none of them. Its
+      # remote is removed, so nothing in `build` can fetch what it leaves out.
       - name: Seal the pinned commit
         id: seal
         env:
           COMMIT: ${{ steps.pin.outputs.commit }}
           SOURCE_ARCHIVE_KEY: ${{ secrets.SOURCE_ARCHIVE_KEY }}
         run: |
-          if [ -z "$SOURCE_ARCHIVE_KEY" ]; then
-            echo "::error::The release environment holds no SOURCE_ARCHIVE_KEY."
+          if [ "${#SOURCE_ARCHIVE_KEY}" -lt 32 ]; then
+            echo "::error::The release-source environment holds no SOURCE_ARCHIVE_KEY of at least 32 characters. Set a fresh one as the README describes."
             exit 1
           fi
           pinned="$RUNNER_TEMP/pinned"
+          git -C "$GITHUB_WORKSPACE/source" config uploadpack.allowFilter true
           git init --quiet "$pinned"
-          git -C "$pinned" fetch --quiet --depth 1 "$GITHUB_WORKSPACE/source" "$COMMIT"
+          git -C "$pinned" remote add origin "$GITHUB_WORKSPACE/source"
+          git -C "$pinned" fetch --quiet --depth 1 --filter=blob:none origin "$COMMIT"
+          git -C "$pinned" sparse-checkout set --cone modules/mcp-connector
           git -C "$pinned" checkout --quiet --detach FETCH_HEAD
+          git -C "$pinned" remote remove origin
           mkdir "$RUNNER_TEMP/sealed"
           sealed="$RUNNER_TEMP/sealed/source.tgz.enc"
           tar -C "$pinned" -czf - . |
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:SOURCE_ARCHIVE_KEY -out "$sealed"
+            openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:SOURCE_ARCHIVE_KEY -out "$sealed"
           echo "digest=$(sha256sum "$sealed" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        id: upload
         with:
           name: source
           path: ${{ runner.temp }}/sealed/source.tgz.enc
@@ -192,12 +201,11 @@ jobs:
     needs: fetch
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    environment: release
+    environment: release-build
     permissions:
       contents: read
     outputs:
       file: ${{ steps.pack.outputs.file }}
-      artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       # For the pin `release:pack` copies into the package.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -222,8 +230,11 @@ jobs:
             exit 1
           fi
           mkdir source
-          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:SOURCE_ARCHIVE_KEY -in "$sealed" |
-            tar -C source -xzf -
+          if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:SOURCE_ARCHIVE_KEY -in "$sealed" |
+            tar -C source -xzf -; then
+            echo "::error::Could not unseal the source. The release-source and release-build environments have to hold the same SOURCE_ARCHIVE_KEY."
+            exit 1
+          fi
           rm "$sealed"
           if [ "$(git -C source rev-parse HEAD)" != "$COMMIT" ] || [ -n "$(git -C source status --porcelain)" ]; then
             echo "::error::The unsealed source is not the pinned commit $COMMIT."
@@ -282,7 +293,6 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        id: upload
         with:
           name: tarball
           path: ${{ runner.temp }}/release/${{ steps.pack.outputs.file }}
@@ -341,6 +351,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Sealed or not, nothing of a run stays downloadable longer than the run.
+  # The artifacts are listed from the run itself, not taken from the other
+  # jobs' outputs: `build` runs the source's code, which could change what
+  # that job reports, and an upload whose job failed before it reported one
+  # is deleted too.
   cleanup:
     name: Delete the run's artifacts
     needs: [fetch, build, publish]
@@ -353,13 +367,18 @@ jobs:
       - name: Delete the artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE: ${{ needs.fetch.outputs.artifact }}
-          TARBALL: ${{ needs.build.outputs.artifact }}
-        # One failed deletion must not keep the other from being tried.
+        # One failed deletion must not keep the others from being tried.
         run: |
+          if ! ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq '.artifacts[] | select(.expired | not) | .id'); then
+            echo "::error::Could not list the run's artifacts."
+            exit 1
+          fi
           status=0
-          for id in $SOURCE $TARBALL; do
-            if ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; then
+          for id in $ids; do
+            if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+              echo "::error::The run's artifacts were listed with an id that is not a number."
+              status=1
+            elif ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; then
               echo "::error::Could not delete artifact $id."
               status=1
             fi

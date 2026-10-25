@@ -27,18 +27,30 @@ function* strings(value, path = []) {
   }
 }
 
+/**
+ * Each expression in a string, without its string literals. An expression
+ * ends at the first `}}` outside a literal, so a `}` in one, as in
+ * `format('{0}', ...)`, does not end it, and a literal names no secret.
+ */
+const LITERAL = /'(?:[^']|'')*'/g;
+const expressions = (text) =>
+  [...text.matchAll(/\$\{\{((?:'(?:[^']|'')*'|[^'}]|\}(?!\}))*)\}\}/g)].map(
+    ([, body]) => body.replaceAll(LITERAL, "''"),
+  );
+
 /** The names of the secrets a value refers to, with the path to each. */
 function* secretReferences(value) {
   for (const [text, path] of strings(value)) {
-    for (const [expression] of text.matchAll(/\$\{\{[^}]*\}\}/g)) {
-      for (const word of expression.matchAll(/\bsecrets\b(\.\w+)?/g)) {
+    for (const expression of expressions(text)) {
+      // Contexts and secret names are read regardless of case.
+      for (const word of expression.matchAll(/\bsecrets\b(\.\w+)?/gi)) {
         // `secrets[...]` or `toJSON(secrets)` would hand on secrets this test
         // cannot name.
         assert.ok(
           word[1],
           `${path.join(".")} refers to secrets without naming one`,
         );
-        yield [word[1].slice(1), path];
+        yield [word[1].slice(1).toUpperCase(), path];
       }
     }
   }
@@ -49,9 +61,31 @@ const secretsOf = (job) =>
 const jobsReferring = (name) =>
   jobs.filter(([, job]) => secretsOf(job).has(name));
 const namesOf = (holders) => holders.map(([name]) => name).sort();
+const environmentOf = (job) => job.environment?.name ?? job.environment;
 const runsNode = (step) =>
   /^(pnpm|actions)\/(action-setup|setup-node)@/.test(step.uses ?? "") ||
   /\b(pnpm|npm|npx|node|corepack|yarn)\b/.test(step.run ?? "");
+
+describe("the secret scan", () => {
+  const names = (text) => [...secretReferences(text)].map(([name]) => name);
+
+  it("finds a secret in any expression", () => {
+    assert.deepEqual(names("${{ secrets.A }}"), ["A"]);
+    assert.deepEqual(names("x ${{ secrets.a }} ${{ SECRETS.B }}"), ["A", "B"]);
+    assert.deepEqual(names("${{ format('{0}', secrets.A) }}"), ["A"]);
+    assert.deepEqual(names("${{ format('}}', secrets.A) }}"), ["A"]);
+    assert.deepEqual(names("${{ format('it''s {0}', secrets.A) }}"), ["A"]);
+  });
+
+  it("reads no secret in a string literal or outside an expression", () => {
+    assert.deepEqual(names("secrets.A ${{ 'secrets.A' }}"), []);
+  });
+
+  it("refuses a reference to secrets that names none", () => {
+    assert.throws(() => names("${{ toJSON(secrets) }}"));
+    assert.throws(() => names("${{ secrets['A'] }}"));
+  });
+});
 
 describe("the release workflow", () => {
   it("starts on a version tag only", () => {
@@ -78,15 +112,28 @@ describe("the release workflow", () => {
     );
   });
 
-  it("holds every secret in the release environment", () => {
+  it("holds each secret in an environment of its job's own", () => {
+    const expected = { fetch: "release-source", build: "release-build" };
     for (const [name, job] of jobs) {
       if (secretsOf(job).size > 0) {
         assert.equal(
-          job.environment,
-          "release",
-          `job ${name} refers to a secret outside the release environment`,
+          environmentOf(job),
+          expected[name],
+          `job ${name} refers to a secret outside its environment`,
         );
       }
+    }
+    // The deploy key's environment is not one a job that runs the source's
+    // code runs in, whichever secrets GitHub hands that job.
+    for (const [holder] of jobsReferring("SOURCE_DEPLOY_KEY")) {
+      const environment = environmentOf(release.jobs[holder]);
+      assert.deepEqual(
+        jobs
+          .filter(([, job]) => environmentOf(job) === environment)
+          .map(([name]) => name),
+        [holder],
+        `job ${holder} shares the deploy key's environment`,
+      );
     }
   });
 
@@ -103,6 +150,12 @@ describe("the release workflow", () => {
         !runsNode(step),
         `job ${name} holds the deploy key and runs Node in ${step.name ?? step.uses}`,
       );
+      // An action is code that runs in the job, with the key in reach.
+      assert.match(
+        step.uses ?? "actions/checkout@",
+        /^actions\/(checkout|upload-artifact)@/,
+        `job ${name} holds the deploy key and runs ${step.uses}`,
+      );
       if (/^actions\/upload-artifact@/.test(step.uses ?? "")) {
         assert.match(
           step.with.path,
@@ -117,6 +170,26 @@ describe("the release workflow", () => {
     assert.equal(steps.length, 1);
     assert.match(steps[0].uses, /^actions\/checkout@/);
     assert.equal(steps[0].with["persist-credentials"], false);
+  });
+
+  it("seals the connector's files and not the other modules'", () => {
+    const [seal] = release.jobs.fetch.steps.filter((step) =>
+      /\bopenssl enc\b/.test(step.run ?? ""),
+    );
+    const at = (pattern) => {
+      const index = seal.run.search(pattern);
+      assert.notEqual(index, -1, `the seal step does not run ${pattern}`);
+      return index;
+    };
+    const tar = at(/\btar\b/);
+    for (const command of [
+      /fetch [^\n]*--filter=blob:none/,
+      /sparse-checkout set --cone modules\/mcp-connector\n/,
+      /checkout [^\n]*FETCH_HEAD/,
+      /remote remove origin/,
+    ]) {
+      assert.ok(at(command) < tar, `the seal step runs ${command} after tar`);
+    }
   });
 
   it("hands the archive key to steps that run no Node, in their env", () => {
@@ -185,6 +258,20 @@ describe("the release workflow", () => {
     assert.ok(
       job.steps.every((step) => step.uses === undefined && !runsNode(step)),
     );
+    // What the other jobs report could come from the source's code, so the
+    // artifacts are listed from the run instead.
+    for (const [text, path] of strings(job.steps)) {
+      for (const expression of expressions(text)) {
+        assert.doesNotMatch(
+          expression,
+          /\bneeds\b/i,
+          `job ${name} reads another job's output in ${path.join(".")}`,
+        );
+      }
+    }
+    const [step] = job.steps;
+    assert.match(step.run, /\/actions\/runs\/\$GITHUB_RUN_ID\/artifacts\b/);
+    assert.match(step.run, /\[\[ "\$id" =~ \^\[0-9\]\+\$ \]\]/);
   });
 
   it("sets every job's permissions", () => {
