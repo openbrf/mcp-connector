@@ -246,17 +246,23 @@ jobs:
       - name: Install dependencies
         working-directory: source
         run: |
-          if ! pnpm install --frozen-lockfile > "$RUNNER_TEMP/install.log" 2>&1; then
+          if pnpm install --frozen-lockfile > "$RUNNER_TEMP/install.log" 2>&1; then
+            exit 0
+          else
+            status=$?
             echo "::error::Installing the dependencies failed. Their output is kept out of this public log: run pnpm install --frozen-lockfile in a checkout of the pinned commit to see why."
-            exit 1
+            exit "$status"
           fi
 
       - name: Typecheck and test
         working-directory: source/modules/mcp-connector
         run: |
-          if ! { pnpm typecheck && pnpm test; } > "$RUNNER_TEMP/test.log" 2>&1; then
+          if { pnpm typecheck && pnpm test; } > "$RUNNER_TEMP/test.log" 2>&1; then
+            exit 0
+          else
+            status=$?
             echo "::error::The typecheck or the tests failed. Their output is kept out of this public log: run pnpm typecheck and pnpm test in a checkout of the pinned commit to see why."
-            exit 1
+            exit "$status"
           fi
 
       # Builds from scratch with the pin copied in, packs, and runs the
@@ -265,9 +271,12 @@ jobs:
         id: pack
         working-directory: source/modules/mcp-connector
         run: |
-          if ! pnpm release:pack "$GITHUB_WORKSPACE/release/source.json" "$RUNNER_TEMP/release" > "$RUNNER_TEMP/pack.log" 2>&1; then
+          if pnpm release:pack "$GITHUB_WORKSPACE/release/source.json" "$RUNNER_TEMP/release" > "$RUNNER_TEMP/pack.log" 2>&1; then
+            :
+          else
+            status=$?
             echo "::error::Building or packing failed. The output is kept out of this public log: run pnpm release:pack in a checkout of the pinned commit to see why."
-            exit 1
+            exit "$status"
           fi
           file=$(cd "$RUNNER_TEMP/release" && ls -- *.tgz)
           echo "file=$file" >> "$GITHUB_OUTPUT"
