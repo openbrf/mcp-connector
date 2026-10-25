@@ -67,10 +67,7 @@ describe("the release workflow", () => {
         [],
         `job ${name} refers to a secret outside its steps`,
       );
-      assert.ok(
-        !JSON.stringify(job).includes("secrets: inherit"),
-        `job ${name} inherits secrets`,
-      );
+      assert.notEqual(job.secrets, "inherit", `job ${name} inherits secrets`);
     }
   });
 

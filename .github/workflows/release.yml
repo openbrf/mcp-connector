@@ -346,7 +346,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE: ${{ needs.fetch.outputs.artifact }}
           TARBALL: ${{ needs.build.outputs.artifact }}
+        # One failed deletion must not keep the other from being tried.
         run: |
+          status=0
           for id in $SOURCE $TARBALL; do
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            if ! gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; then
+              echo "::error::Could not delete artifact $id."
+              status=1
+            fi
           done
+          exit "$status"
