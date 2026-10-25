@@ -56,7 +56,7 @@ packs it with the pin copied in unchanged, attests the tarball and publishes
 the release. Its job summary gives the sha512 and size for the catalog entry.
 
 The run logs of this repository are public, so the output of the source's
-typecheck, tests and build stays out of them. A failed release says which step
+dependency install, typecheck, tests and build stays out of them. A failed release says which step
 failed; running that step in a checkout of the pinned commit shows why.
 
 The workflow relies on these repository settings:

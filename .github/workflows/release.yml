@@ -157,7 +157,11 @@ jobs:
 
       - name: Install dependencies
         working-directory: source
-        run: pnpm install --frozen-lockfile
+        run: |
+          if ! pnpm install --frozen-lockfile > "$RUNNER_TEMP/install.log" 2>&1; then
+            echo "::error::Installing the dependencies failed. Their output is kept out of this public log: run pnpm install --frozen-lockfile in a checkout of the pinned commit to see why."
+            exit 1
+          fi
 
       - name: Typecheck and test
         working-directory: source/modules/mcp-connector
