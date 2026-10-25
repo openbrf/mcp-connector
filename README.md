@@ -46,11 +46,21 @@ been released yet.
    }
    ```
 
-2. Merge it, then push the tag `v<version>` from `main` while `source.json`
-   there still pins that commit. The version is the one the pinned commit's
-   package states.
-3. Approve the run in the `release` environment twice: before it fetches the
-   source, and again before it builds it.
+2. Merge it, then set a fresh `SOURCE_ARCHIVE_KEY`, the same in both release
+   environments:
+
+   ```sh
+   key=$(openssl rand -base64 48)
+   for environment in release-source release-build; do
+     printf '%s' "$key" |
+       gh secret set SOURCE_ARCHIVE_KEY --repo openbrf/mcp-connector --env "$environment"
+   done
+   ```
+
+3. Push the tag `v<version>` from `main` while `source.json` there still pins
+   that commit. The version is the one the pinned commit's package states.
+4. Approve the run twice: in `release-source` before it fetches the source,
+   and in `release-build` before it builds it.
 
 The workflow refuses a tag that is not on `main`, whose `source.json` is not
 `main`'s, or that does not match the version, and a pin that is not on the
@@ -64,10 +74,11 @@ The run logs of this repository are public, so the output of the source's
 dependency install, typecheck, tests and build stays out of them. A failed
 release says which step failed; running that step in a checkout of the pinned
 commit shows why. The source passes from one job to the next only encrypted,
-and the run deletes its artifacts when it ends. To retry a run that failed
-before it published the release, use **Re-run all jobs**: **Re-run failed
-jobs** does not run the jobs that made the artifacts again, so the retried
-jobs find them deleted.
+and only the root files and the connector's own directory: the job that runs
+the source's code never holds the other modules. The run deletes every
+artifact it made when it ends. To retry a run that failed before it published
+the release, use **Re-run all jobs**: **Re-run failed jobs** does not run the
+jobs that made the artifacts again, so the retried jobs find them deleted.
 
 The workflow relies on these repository settings:
 
@@ -76,14 +87,20 @@ The workflow relies on these repository settings:
   delete one;
 - a branch ruleset on `main` requires a pull request approved by someone other
   than its author, and refuses force pushes and deletion;
-- the `release` environment allows only `v*` tags, and a maintainer approves
-  each run's jobs in it. It holds two secrets:
-  - `SOURCE_DEPLOY_KEY`, a read-only deploy key on apteoab/openbrf-modules.
-    The key reads every module in that repository, not only the connector;
-  - `SOURCE_ARCHIVE_KEY`, a random key that encrypts the source the run hands
-    from one job to the next;
+- two environments, `release-source` and `release-build`, each allow only
+  `v*` tags, and a maintainer approves each run's job in each:
+  - `release-source` holds `SOURCE_DEPLOY_KEY`, a read-only deploy key on
+    apteoab/openbrf-modules that reads every module in that repository, not
+    only the connector, and `SOURCE_ARCHIVE_KEY`;
+  - `release-build` holds `SOURCE_ARCHIVE_KEY` alone. Its job runs the
+    source's install, tests and build, so it must never hold the deploy key;
+- `SOURCE_ARCHIVE_KEY` is a random key of at least 32 characters that
+  encrypts the source the run hands from one job to the next. Both
+  environments hold the same one, set afresh before each release as above, so
+  a key read in one run opens no later run's artifact. The workflow cannot see
+  when it was set, so this rests on the maintainers;
 - the repository and its organisation hold no secret of these names outside
-  that environment, and the repository has no other environment.
+  those environments, and the repository has no other environment.
 
 ## Licence
 
