@@ -151,7 +151,7 @@ jobs:
         run: |
           version=$(node -p 'require("./package.json").version')
           if [ "$TAG" != "v$version" ]; then
-            echo "::error::The tag is $TAG but the pinned commit's package states version $version."
+            echo "::error::The tag is $TAG, which is not the version the pinned commit's package states."
             exit 1
           fi
 
