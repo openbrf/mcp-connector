@@ -10,7 +10,7 @@
 #   }
 #
 # To release: move `source.json` to the commit to release in a pull request,
-# merge it, then push the tag from the merged commit:
+# merge it, then push the tag from main while main still pins that commit:
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
@@ -24,19 +24,24 @@
 # `source.json` at the tagged commit. So this starts on the tag push and
 # nowhere else, and the pin is copied into the package unchanged.
 #
-# Reading the source takes a credential, held as ADR 0044 requires:
+# The run takes two secrets of the `release` environment, which allows only
+# `v*` tags and waits for a maintainer's approval before each job that uses
+# it. The source's install, tests and build run third-party code, and any step
+# of a job can read every secret that job references, so each secret is in
+# the fewest jobs that need it:
 #
-# - `SOURCE_DEPLOY_KEY` is a secret of the `release` environment, whose
-#   deployment rule allows only `v*` tags. It is a read-only deploy key on
-#   apteoab/openbrf-modules: it reads every module in that repository, not
-#   only the connector, and writes nothing.
-# - The source is checked out with `persist-credentials: false`, so the key is
-#   not left where the build could read it. The job still runs the source's
-#   install, tests and build while it holds the key, so the key is rotated
-#   whenever a dependency of that build is reported compromised.
-# - The job that holds the key builds, without `id-token` or `attestations`.
-#   The job that attests and publishes has those and not the key, and takes
-#   the tarball from the first.
+# - `fetch` holds `SOURCE_DEPLOY_KEY`, a read-only deploy key on
+#   apteoab/openbrf-modules that reads every module there, not only the
+#   connector. It runs no Node and installs nothing. It checks the pin, takes
+#   the pinned commit alone, without history, and seals it with
+#   `SOURCE_ARCHIVE_KEY`: an artifact of a public repository can be downloaded
+#   by anyone signed in to GitHub.
+# - `build` holds `SOURCE_ARCHIVE_KEY` to unseal that commit, and not the
+#   deploy key. The archive key is rotated whenever a dependency of the source
+#   is reported compromised.
+# - `publish` attests and publishes, with `id-token` and `attestations` and no
+#   secret. `cleanup` deletes the run's artifacts once it ends, however it
+#   ends.
 #
 # The pin is only a commit id, and outside reviewers cannot read the commit it
 # names. So the run builds nothing that is not on the source's `main`, and it
@@ -64,17 +69,24 @@ concurrency:
 permissions:
   contents: read
 
+# `bash` by name runs with `pipefail`, so a pipe fails when any part of it
+# does.
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  build:
-    name: Build the pinned source
+  fetch:
+    name: Fetch the pinned source
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     environment: release
     permissions:
       contents: read
     outputs:
-      file: ${{ steps.pack.outputs.file }}
       commit: ${{ steps.pin.outputs.commit }}
+      digest: ${{ steps.seal.outputs.digest }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,9 +96,9 @@ jobs:
           persist-credentials: false
 
       # A tag is cheap to push from anywhere, so the run refuses one that is
-      # not main's own commit. The pin's form is checked again, with the
-      # catalog's rules, by the source's own `release:pack`; this reads only
-      # the commit to check out.
+      # not on main, or whose pin is no longer main's. The pin's form is
+      # checked again, with the catalog's rules, by the source's own
+      # `release:pack`; this reads only the commit to fetch.
       - name: Read the pin
         id: pin
         working-directory: release
@@ -99,6 +111,10 @@ jobs:
           fi
           if [ ! -f source.json ]; then
             echo "::error::source.json is missing. Pin the commit to release in a pull request first."
+            exit 1
+          fi
+          if ! git show origin/main:source.json | cmp -s - source.json; then
+            echo "::error::source.json at $TAG is not the one on main. Tag a commit of main whose source.json is main's."
             exit 1
           fi
           commit=$(jq -er '.commit' source.json)
@@ -121,16 +137,98 @@ jobs:
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
 
-      - name: Check out the pinned commit
+      - name: Check the pinned commit
         working-directory: source
         env:
           COMMIT: ${{ steps.pin.outputs.commit }}
+          TAG: ${{ github.ref_name }}
         run: |
           if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
             echo "::error::source.json pins $COMMIT, which is not on the main branch of apteoab/openbrf-modules. Pin a commit of main."
             exit 1
           fi
-          git checkout --quiet --detach "$COMMIT"
+          if ! version=$(git show "$COMMIT:modules/mcp-connector/package.json" | jq -er '.version'); then
+            echo "::error::The pinned commit has no modules/mcp-connector/package.json that states a version."
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::The tag is $TAG, which is not the version the pinned commit's package states."
+            exit 1
+          fi
+
+      # The pinned commit alone, without the history before it, in a
+      # repository of its own, so `release:pack` can tell that it builds that
+      # commit unchanged.
+      - name: Seal the pinned commit
+        id: seal
+        env:
+          COMMIT: ${{ steps.pin.outputs.commit }}
+          SOURCE_ARCHIVE_KEY: ${{ secrets.SOURCE_ARCHIVE_KEY }}
+        run: |
+          if [ -z "$SOURCE_ARCHIVE_KEY" ]; then
+            echo "::error::The release environment holds no SOURCE_ARCHIVE_KEY."
+            exit 1
+          fi
+          pinned="$RUNNER_TEMP/pinned"
+          git init --quiet "$pinned"
+          git -C "$pinned" fetch --quiet --depth 1 "$GITHUB_WORKSPACE/source" "$COMMIT"
+          git -C "$pinned" checkout --quiet --detach FETCH_HEAD
+          mkdir "$RUNNER_TEMP/sealed"
+          sealed="$RUNNER_TEMP/sealed/source.tgz.enc"
+          tar -C "$pinned" -czf - . |
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:SOURCE_ARCHIVE_KEY -out "$sealed"
+          echo "digest=$(sha256sum "$sealed" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        with:
+          name: source
+          path: ${{ runner.temp }}/sealed/source.tgz.enc
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Test and pack the pinned source
+    needs: fetch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      file: ${{ steps.pack.outputs.file }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      # For the pin `release:pack` copies into the package.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: release
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: source
+          path: ${{ runner.temp }}/sealed
+
+      - name: Unseal the pinned commit
+        env:
+          COMMIT: ${{ needs.fetch.outputs.commit }}
+          DIGEST: ${{ needs.fetch.outputs.digest }}
+          SOURCE_ARCHIVE_KEY: ${{ secrets.SOURCE_ARCHIVE_KEY }}
+        run: |
+          sealed="$RUNNER_TEMP/sealed/source.tgz.enc"
+          if [ "$(sha256sum "$sealed" | cut -d ' ' -f 1)" != "$DIGEST" ]; then
+            echo "::error::The sealed source is not the one the fetch job sealed."
+            exit 1
+          fi
+          mkdir source
+          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:SOURCE_ARCHIVE_KEY -in "$sealed" |
+            tar -C source -xzf -
+          rm "$sealed"
+          if [ "$(git -C source rev-parse HEAD)" != "$COMMIT" ] || [ -n "$(git -C source status --porcelain)" ]; then
+            echo "::error::The unsealed source is not the pinned commit $COMMIT."
+            exit 1
+          fi
 
       # The pnpm version is read from `packageManager` in the source's
       # package.json.
@@ -143,17 +241,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: source/.nvmrc
-
-      - name: Check the version
-        working-directory: source/modules/mcp-connector
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version=$(node -p 'require("./package.json").version')
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::The tag is $TAG, which is not the version the pinned commit's package states."
-            exit 1
-          fi
+          package-manager-cache: false
 
       - name: Install dependencies
         working-directory: source
@@ -185,6 +273,7 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
         with:
           name: tarball
           path: ${{ runner.temp }}/release/${{ steps.pack.outputs.file }}
@@ -193,7 +282,7 @@ jobs:
 
   publish:
     name: Attest and release
-    needs: build
+    needs: [fetch, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -220,7 +309,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           FILE: ${{ runner.temp }}/release/${{ needs.build.outputs.file }}
-          COMMIT: ${{ needs.build.outputs.commit }}
+          COMMIT: ${{ needs.fetch.outputs.commit }}
         run: |
           gh release create "$TAG" "$FILE" \
             --repo "$GITHUB_REPOSITORY" \
@@ -241,3 +330,23 @@ jobs:
             echo "- sha512: \`sha512-$(openssl dgst -sha512 -binary "$FILE" | base64 -w0)\`"
             echo "- bytes: \`$(stat -c %s "$FILE")\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Sealed or not, nothing of a run stays downloadable longer than the run.
+  cleanup:
+    name: Delete the run's artifacts
+    needs: [fetch, build, publish]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ needs.fetch.outputs.artifact }}
+          TARBALL: ${{ needs.build.outputs.artifact }}
+        run: |
+          for id in $SOURCE $TARBALL; do
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+          done
