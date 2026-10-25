@@ -46,27 +46,44 @@ been released yet.
    }
    ```
 
-2. Merge it, then push the tag `v<version>` from the merged commit. The
-   version is the one the pinned commit's package states.
+2. Merge it, then push the tag `v<version>` from `main` while `source.json`
+   there still pins that commit. The version is the one the pinned commit's
+   package states.
+3. Approve the run in the `release` environment twice: before it fetches the
+   source, and again before it builds it.
 
-The workflow refuses a tag that is not on `main` or does not match the
-version, and a pin that is not on the main branch of apteoab/openbrf-modules.
-It checks out the pinned commit, runs the connector's typecheck and tests,
-packs it with the pin copied in unchanged, attests the tarball and publishes
-the release. Its job summary gives the sha512 and size for the catalog entry.
+The workflow refuses a tag that is not on `main`, whose `source.json` is not
+`main`'s, or that does not match the version, and a pin that is not on the
+main branch of apteoab/openbrf-modules. It fetches the pinned commit in a job
+that runs none of the source's code, then runs the connector's typecheck and
+tests in a job of its own, packs it with the pin copied in unchanged, attests
+the tarball and publishes the release. Its job summary gives the sha512 and
+size for the catalog entry.
 
 The run logs of this repository are public, so the output of the source's
-dependency install, typecheck, tests and build stays out of them. A failed release says which step
-failed; running that step in a checkout of the pinned commit shows why.
+dependency install, typecheck, tests and build stays out of them. A failed
+release says which step failed; running that step in a checkout of the pinned
+commit shows why. The source passes from one job to the next only encrypted,
+and the run deletes its artifacts when it ends. To retry a run that failed
+before it published the release, use **Re-run all jobs**: **Re-run failed
+jobs** does not run the jobs that made the artifacts again, so the retried
+jobs find them deleted.
 
 The workflow relies on these repository settings:
 
 - releases are immutable;
 - a tag ruleset lets only the maintainers create a `v*` tag, and nobody move or
   delete one;
-- the `release` environment allows only `v*` tags and holds
-  `SOURCE_DEPLOY_KEY`, a read-only deploy key on apteoab/openbrf-modules. The
-  key reads every module in that repository, not only the connector.
+- a branch ruleset on `main` requires a pull request approved by someone other
+  than its author, and refuses force pushes and deletion;
+- the `release` environment allows only `v*` tags, and a maintainer approves
+  each run's jobs in it. It holds two secrets:
+  - `SOURCE_DEPLOY_KEY`, a read-only deploy key on apteoab/openbrf-modules.
+    The key reads every module in that repository, not only the connector;
+  - `SOURCE_ARCHIVE_KEY`, a random key that encrypts the source the run hands
+    from one job to the next;
+- the repository and its organisation hold no secret of these names outside
+  that environment, and the repository has no other environment.
 
 ## Licence
 
@@ -82,4 +99,5 @@ covered by it.
 ## Contributing
 
 Commit messages and pull request titles follow
-[Conventional Commits](https://www.conventionalcommits.org/).
+[Conventional Commits](https://www.conventionalcommits.org/). `pnpm test`
+checks which jobs of the release workflow can read each secret.
