@@ -46,14 +46,29 @@ been released yet.
    }
    ```
 
-2. Merge it, then set a fresh `SOURCE_ARCHIVE_KEY`, the same in both release
-   environments:
+2. Merge it. Make sure no earlier release run is still waiting for approval or
+   building: a job reads its environment secrets when it starts, so a key
+   changed under a run that has sealed its archive leaves that run's build
+   unable to unseal it. Then set a fresh `SOURCE_ARCHIVE_KEY`, the same in both
+   release environments. The subshell stops at the first failing command:
 
    ```sh
-   key=$(openssl rand -base64 48)
+   (
+     set -eu
+     key=$(openssl rand -base64 48)
+     for environment in release-source release-build; do
+       printf '%s' "$key" |
+         gh secret set SOURCE_ARCHIVE_KEY --repo openbrf/mcp-connector --env "$environment"
+     done
+   )
+   ```
+
+   Confirm that both environments list `SOURCE_ARCHIVE_KEY` with an updated
+   time of just now before you push the tag:
+
+   ```sh
    for environment in release-source release-build; do
-     printf '%s' "$key" |
-       gh secret set SOURCE_ARCHIVE_KEY --repo openbrf/mcp-connector --env "$environment"
+     gh secret list --repo openbrf/mcp-connector --env "$environment"
    done
    ```
 
