@@ -48,6 +48,7 @@ const secretsOf = (job) =>
   new Set([...secretReferences(job)].map(([name]) => name));
 const jobsReferring = (name) =>
   jobs.filter(([, job]) => secretsOf(job).has(name));
+const namesOf = (holders) => holders.map(([name]) => name).sort();
 const runsNode = (step) =>
   /^(pnpm|actions)\/(action-setup|setup-node)@/.test(step.uses ?? "") ||
   /\b(pnpm|npm|npx|node|corepack|yarn)\b/.test(step.run ?? "");
@@ -94,7 +95,11 @@ describe("the release workflow", () => {
 
   it("fetches the source in a job that runs no Node and seals what it hands on", () => {
     const holders = jobsReferring("SOURCE_DEPLOY_KEY");
-    assert.equal(holders.length, 1, "exactly one job holds the deploy key");
+    assert.deepEqual(
+      namesOf(holders),
+      ["fetch"],
+      "the deploy key is held by the fetch job alone",
+    );
     const [[name, job]] = holders;
     for (const step of job.steps) {
       assert.ok(
@@ -119,7 +124,11 @@ describe("the release workflow", () => {
 
   it("hands the archive key to steps that run no Node, in their env", () => {
     const holders = jobsReferring("SOURCE_ARCHIVE_KEY");
-    assert.ok(holders.length > 0);
+    assert.deepEqual(
+      namesOf(holders),
+      ["build", "fetch"],
+      "the archive key is held by the fetch and build jobs alone",
+    );
     for (const [name, job] of holders) {
       for (const [secret, [index, ...path]] of secretReferences(job.steps)) {
         if (secret !== "SOURCE_ARCHIVE_KEY") continue;
