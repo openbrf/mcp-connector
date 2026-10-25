@@ -64,7 +64,10 @@ The run logs of this repository are public, so the output of the source's
 dependency install, typecheck, tests and build stays out of them. A failed
 release says which step failed; running that step in a checkout of the pinned
 commit shows why. The source passes from one job to the next only encrypted,
-and the run deletes its artifacts when it ends.
+and the run deletes its artifacts when it ends. To retry a run that failed
+before it published the release, use **Re-run all jobs**: **Re-run failed
+jobs** does not run the jobs that made the artifacts again, so the retried
+jobs find them deleted.
 
 The workflow relies on these repository settings:
 
